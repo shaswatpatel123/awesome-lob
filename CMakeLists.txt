@@ -31,28 +31,25 @@ include_directories(${CMAKE_SOURCE_DIR}/include)
 
 # Source files for the orderbook library
 set(CUDA_ORDERBOOK_SOURCES
-    # Stub files for now - teams will implement
-    # src/utils.cu         # Team 1: Days 3-4
-    # src/operations.cu    # Team 1 & 2: Days 3-8
-    # src/kernels.cu       # All teams: Days 4-8
-    # src/queries.cu       # Team 3: Days 2-4
-    # src/orderbook.cu     # Team 3: Days 5-8
+    # Team 1 & 2 implemented:
+    src/operations.cu    # Device functions: add, cancel, matching
+    src/kernels.cu       # CUDA kernels: all operations
+    # src/utils.cu         # Team 1: Days 3-4 (TODO)
+    # src/queries.cu       # Team 3: Days 2-4 (TODO)
+    # src/orderbook.cu     # Team 3: Days 5-8 (TODO)
 )
 
-# Create library (static for now, can be changed to shared)
-# Note: Initially empty, teams will add sources as they implement
-add_library(cuda_orderbook INTERFACE)
+# Create static library with CUDA sources
+add_library(cuda_orderbook STATIC ${CUDA_ORDERBOOK_SOURCES})
 
-# When sources are added, change to:
-# add_library(cuda_orderbook STATIC ${CUDA_ORDERBOOK_SOURCES})
-# target_include_directories(cuda_orderbook PUBLIC include)
-# target_link_libraries(cuda_orderbook PUBLIC CUDA::cudart)
-
-# Interface library for now (header-only until sources are added)
-target_include_directories(cuda_orderbook INTERFACE 
+# Include directories
+target_include_directories(cuda_orderbook PUBLIC 
     $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
     $<INSTALL_INTERFACE:include>
 )
+
+# Link CUDA runtime
+target_link_libraries(cuda_orderbook PUBLIC CUDA::cudart)
 
 # ============================================================================
 # Examples (Team 3: Days 7-8)
