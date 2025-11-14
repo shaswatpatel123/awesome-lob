@@ -1,9 +1,5 @@
 # CUDA Orderbook - Team Setup Guide
 
-## Daiveek - Member 1
-## Shaswat - Member 2
-## Raju    - Member 3
-
 ## 🚀 Foundation Complete! (Team 1 - Day 2)
 
 The foundation infrastructure is ready for parallel development:

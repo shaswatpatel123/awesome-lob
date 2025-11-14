@@ -400,24 +400,54 @@ __device__ void process_message_device(
         }
     }
     else if (msg.type == Message::LIMIT) {
-        // Limit order
+        // Limit order - need to track remaining quantity after matching
         if (msg.side == Message::ASK) {
             // Sell limit: match against bids, then add remainder
-            Message match_msg = msg;
-            match_against_bids_device(asks, bids, trades, match_msg, n_orders, n_trades);
-            // Add any remaining quantity as resting order
-            // Note: We'd need to track remaining quantity here
-            // For now, simplified - add if quantity > 0
-            if (msg.quantity > 0) {
-                add_order_device(asks, msg, n_orders);
+            
+            // Count initial bid volume at or above our price
+            int32_t matchable_qty = 0;
+            for (int i = 0; i < n_orders; i++) {
+                if (bids[i].price != EMPTY_PRICE && bids[i].price >= msg.price) {
+                    matchable_qty += bids[i].quantity;
+                }
+            }
+            
+            // Match against bids
+            match_against_bids_device(asks, bids, trades, msg, n_orders, n_trades);
+            
+            // Calculate remaining quantity (what wasn't matched)
+            int32_t remaining = msg.quantity - matchable_qty;
+            if (remaining < 0) remaining = 0;
+            
+            // Only add if there's remaining quantity
+            if (remaining > 0) {
+                Message remaining_msg = msg;
+                remaining_msg.quantity = remaining;
+                add_order_device(asks, remaining_msg, n_orders);
             }
         } else if (msg.side == Message::BID) {
             // Buy limit: match against asks, then add remainder
-            Message match_msg = msg;
-            match_against_asks_device(asks, bids, trades, match_msg, n_orders, n_trades);
-            // Add any remaining quantity as resting order
-            if (msg.quantity > 0) {
-                add_order_device(bids, msg, n_orders);
+            
+            // Count initial ask volume at or below our price
+            int32_t matchable_qty = 0;
+            for (int i = 0; i < n_orders; i++) {
+                if (asks[i].price != EMPTY_PRICE && asks[i].price <= msg.price) {
+                    matchable_qty += asks[i].quantity;
+                }
+            }
+            
+            // Match against asks
+            match_against_asks_device(asks, bids, trades, msg, n_orders, n_trades);
+            
+            // Calculate remaining quantity (what wasn't matched)
+            int32_t remaining = msg.quantity - matchable_qty;
+            if (remaining < 0) remaining = 0;
+            
+            // Only add if there's remaining quantity
+            if (remaining > 0) {
+                Message remaining_msg = msg;
+                remaining_msg.quantity = remaining;
+                add_order_device(bids, remaining_msg, n_orders);
             }
         }
     }

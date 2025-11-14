@@ -42,6 +42,12 @@ set(CUDA_ORDERBOOK_SOURCES
 # Create static library with CUDA sources
 add_library(cuda_orderbook STATIC ${CUDA_ORDERBOOK_SOURCES})
 
+# ENABLE CUDA SEPARATE COMPILATION (ADD THESE LINES)
+set_target_properties(cuda_orderbook PROPERTIES 
+    CUDA_SEPARABLE_COMPILATION ON
+    CUDA_RESOLVE_DEVICE_SYMBOLS ON
+)
+
 # Include directories
 target_include_directories(cuda_orderbook PUBLIC 
     $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
