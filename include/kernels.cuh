@@ -62,7 +62,10 @@ __global__ void match_order_batch_kernel(
 /**
  * Process array of messages sequentially for each orderbook in parallel
  * THIS IS THE MAIN KERNEL - Entry point for message processing
- * Each thread block processes ALL messages for ONE orderbook sequentially
+ * 
+ * OPTIMIZED: Each thread block processes 16 orderbooks (1 per warp)
+ * Launch configuration: <<<(num_books + 15) / 16, 512>>>
+ * 
  * Maps to JAX scan_through_entire_array (JaxOrderBookArrays.py:265-267)
  * 
  * @param batch Batch of orderbooks
