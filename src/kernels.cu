@@ -30,14 +30,19 @@ namespace cuda_orderbook {
 
 /**
  * Initialize orderbooks to empty state
- * Each thread block handles one orderbook
- * Threads within block parallelize across orders
+ * OPTIMIZED: Each thread block handles 16 orderbooks (1 per warp)
+ * Threads within each warp parallelize across orders
+ * Launch: <<<(num_books + 15) / 16, 512>>>
  */
 __global__ void init_orderbooks_kernel(
     OrderbookBatch batch,
     int num_books
 ) {
-    int book_idx = blockIdx.x;
+    const int WARPS_PER_BLOCK = 16;
+    int warp_id = threadIdx.x / 32;
+    int lane_id = threadIdx.x % 32;
+    int book_idx = blockIdx.x * WARPS_PER_BLOCK + warp_id;
+    
     if (book_idx >= num_books) return;
     
     // Get this orderbook's arrays
@@ -48,9 +53,9 @@ __global__ void init_orderbooks_kernel(
     int n_orders = batch.n_orders_per_book;
     int n_trades = batch.n_trades_per_book;
     
-    // Parallelize initialization across threads
-    // Each thread initializes multiple orders/trades
-    for (int i = threadIdx.x; i < n_orders; i += blockDim.x) {
+    // Parallelize initialization across threads in this warp
+    // Each thread in warp initializes multiple orders/trades
+    for (int i = lane_id; i < n_orders; i += 32) {
         asks[i].price = EMPTY_PRICE;
         asks[i].quantity = 0;
         asks[i].order_id = 0;
@@ -66,7 +71,7 @@ __global__ void init_orderbooks_kernel(
         bids[i].time_ns = 0;
     }
     
-    for (int i = threadIdx.x; i < n_trades; i += blockDim.x) {
+    for (int i = lane_id; i < n_trades; i += 32) {
         trades[i].price = EMPTY_PRICE;
         trades[i].quantity = 0;
         trades[i].passive_order_id = 0;
@@ -78,15 +83,20 @@ __global__ void init_orderbooks_kernel(
 
 /**
  * Add orders to orderbooks in batch
- * Each thread block processes one orderbook
+ * OPTIMIZED: Each thread block processes 16 orderbooks (1 per warp)
  * Single message per orderbook
+ * Launch: <<<(num_books + 15) / 16, 512>>>
  */
 __global__ void add_order_batch_kernel(
     OrderbookBatch batch,
     const Message* messages,
     int num_books
 ) {
-    int book_idx = blockIdx.x;
+    const int WARPS_PER_BLOCK = 16;
+    int warp_id = threadIdx.x / 32;
+    int lane_id = threadIdx.x % 32;
+    int book_idx = blockIdx.x * WARPS_PER_BLOCK + warp_id;
+    
     if (book_idx >= num_books) return;
     
     // Get this orderbook's data
@@ -94,8 +104,8 @@ __global__ void add_order_batch_kernel(
     Order* bids = batch.get_bids(book_idx);
     const Message& msg = messages[book_idx];
     
-    // Only thread 0 processes (add_order is sequential within orderbook)
-    if (threadIdx.x == 0) {
+    // Only first thread in warp processes (add_order is sequential within orderbook)
+    if (lane_id == 0) {
         if (msg.side == Message::ASK) {
             add_order_device(asks, msg, batch.n_orders_per_book);
         } else if (msg.side == Message::BID) {
@@ -106,15 +116,20 @@ __global__ void add_order_batch_kernel(
 
 /**
  * Cancel orders from orderbooks in batch
- * Each thread block processes one orderbook
+ * OPTIMIZED: Each thread block processes 16 orderbooks (1 per warp)
  * Single message per orderbook
+ * Launch: <<<(num_books + 15) / 16, 512>>>
  */
 __global__ void cancel_order_batch_kernel(
     OrderbookBatch batch,
     const Message* messages,
     int num_books
 ) {
-    int book_idx = blockIdx.x;
+    const int WARPS_PER_BLOCK = 16;
+    int warp_id = threadIdx.x / 32;
+    int lane_id = threadIdx.x % 32;
+    int book_idx = blockIdx.x * WARPS_PER_BLOCK + warp_id;
+    
     if (book_idx >= num_books) return;
     
     // Get this orderbook's data
@@ -122,8 +137,8 @@ __global__ void cancel_order_batch_kernel(
     Order* bids = batch.get_bids(book_idx);
     const Message& msg = messages[book_idx];
     
-    // Only thread 0 processes
-    if (threadIdx.x == 0) {
+    // Only first thread in warp processes
+    if (lane_id == 0) {
         if (msg.side == Message::ASK) {
             cancel_order_device(asks, msg, batch.n_orders_per_book);
         } else if (msg.side == Message::BID) {
@@ -138,15 +153,20 @@ __global__ void cancel_order_batch_kernel(
 
 /**
  * Match orders in batch (limit and market orders)
- * Each thread block processes one orderbook
+ * OPTIMIZED: Each thread block processes 16 orderbooks (1 per warp)
  * Single message per orderbook
+ * Launch: <<<(num_books + 15) / 16, 512>>>
  */
 __global__ void match_order_batch_kernel(
     OrderbookBatch batch,
     const Message* messages,
     int num_books
 ) {
-    int book_idx = blockIdx.x;
+    const int WARPS_PER_BLOCK = 16;
+    int warp_id = threadIdx.x / 32;
+    int lane_id = threadIdx.x % 32;
+    int book_idx = blockIdx.x * WARPS_PER_BLOCK + warp_id;
+    
     if (book_idx >= num_books) return;
     
     // Get this orderbook's data
@@ -155,8 +175,8 @@ __global__ void match_order_batch_kernel(
     Trade* trades = batch.get_trades(book_idx);
     const Message& msg = messages[book_idx];
     
-    // Only thread 0 processes (matching is sequential within orderbook)
-    if (threadIdx.x == 0) {
+    // Only first thread in warp processes (matching is sequential within orderbook)
+    if (lane_id == 0) {
         // Match based on message side
         if (msg.side == Message::BID) {
             // Buy order: match against asks
@@ -176,8 +196,12 @@ __global__ void match_order_batch_kernel(
  * Process array of messages sequentially for each orderbook in parallel
  * THIS IS THE MAIN KERNEL - Entry point for message processing
  * 
- * Each thread block processes ALL messages for ONE orderbook sequentially
- * Multiple orderbooks processed in parallel (one per block)
+ * OPTIMIZED: Each thread block processes 16 orderbooks (1 per warp)
+ * Each warp (32 threads) handles one orderbook sequentially
+ * 
+ * Launch configuration: <<<(num_books + 15) / 16, 512>>>
+ *   - 16 warps per block × 32 threads per warp = 512 threads per block
+ *   - Each warp processes 1 LOB
  * 
  * Maps to JAX scan_through_entire_array (JaxOrderBookArrays.py:265-267)
  * 
@@ -189,7 +213,13 @@ __global__ void process_messages_sequential_kernel(
     int num_messages_per_book,
     int num_books
 ) {
-    int book_idx = blockIdx.x;
+    // Calculate which LOB this warp handles
+    const int WARPS_PER_BLOCK = 16;
+    int warp_id = threadIdx.x / 32;          // 0-15 (which warp in block)
+    int lane_id = threadIdx.x % 32;          // 0-31 (position within warp)
+    int book_idx = blockIdx.x * WARPS_PER_BLOCK + warp_id;  // Global LOB index
+    
+    // Boundary check
     if (book_idx >= num_books) return;
     
     // Get this orderbook's arrays
@@ -201,9 +231,9 @@ __global__ void process_messages_sequential_kernel(
     // Messages are laid out as: [book0_msgs, book1_msgs, ..., bookN_msgs]
     const Message* book_messages = messages + (book_idx * num_messages_per_book);
     
-    // Only thread 0 processes messages (sequential dependency)
-    // Other threads in block are idle (unavoidable due to state dependencies)
-    if (threadIdx.x == 0) {
+    // Only first thread in each warp processes messages (sequential dependency)
+    // Other 31 threads in warp are idle (unavoidable due to state dependencies)
+    if (lane_id == 0) {
         // Process each message in sequence
         for (int msg_idx = 0; msg_idx < num_messages_per_book; msg_idx++) {
             const Message& msg = book_messages[msg_idx];
