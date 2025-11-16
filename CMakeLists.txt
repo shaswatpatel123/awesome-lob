@@ -26,13 +26,30 @@ set(CMAKE_CUDA_ARCHITECTURES "70;75;86")
 # ============================================================================
 include(FetchContent)
 
+# Use older stable version compatible with CMake 3.18+
+# Note: v0.0.1 tag works with CMake 3.18, newer versions require 3.23+
 FetchContent_Declare(
     cuco
     GIT_REPOSITORY https://github.com/NVIDIA/cuCollections.git
-    GIT_TAG        dev  # Use stable tag in production
+    GIT_TAG        v0.0.1  # Stable version compatible with CMake 3.18+
 )
 
-FetchContent_MakeAvailable(cuco)
+# Make cuCollections optional - fallback to simple hash if fetch fails
+set(CUCO_AVAILABLE FALSE)
+FetchContent_GetProperties(cuco)
+if(NOT cuco_POPULATED)
+    message(STATUS "Fetching cuCollections v0.0.1 (CMake 3.18+ compatible)...")
+    FetchContent_Populate(cuco)
+    
+    # Check if we can build it
+    if(EXISTS "${cuco_SOURCE_DIR}/CMakeLists.txt")
+        add_subdirectory(${cuco_SOURCE_DIR} ${cuco_BINARY_DIR})
+        set(CUCO_AVAILABLE TRUE)
+        message(STATUS "cuCollections: AVAILABLE")
+    else()
+        message(WARNING "cuCollections: NOT AVAILABLE - will use simple CUDA hash only")
+    endif()
+endif()
 
 # Include directories
 include_directories(${CMAKE_SOURCE_DIR}/include)
@@ -71,11 +88,18 @@ target_include_directories(cuda_orderbook PUBLIC
     $<INSTALL_INTERFACE:include>
 )
 
-# Link CUDA runtime and cuCollections
-target_link_libraries(cuda_orderbook PUBLIC 
-    CUDA::cudart
-    cuco::cuco
-)
+# Link CUDA runtime
+target_link_libraries(cuda_orderbook PUBLIC CUDA::cudart)
+
+# Link cuCollections if available
+if(CUCO_AVAILABLE)
+    target_link_libraries(cuda_orderbook PUBLIC cuco::cuco)
+    target_compile_definitions(cuda_orderbook PUBLIC CUCO_AVAILABLE=1)
+    message(STATUS "Hash LOB: cuCollections enabled")
+else()
+    target_compile_definitions(cuda_orderbook PUBLIC CUCO_AVAILABLE=0)
+    message(STATUS "Hash LOB: Simple CUDA hash only (cuCollections not available)")
+endif()
 
 # ============================================================================
 # Examples (Team 3: Days 7-8)

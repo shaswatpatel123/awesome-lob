@@ -3,19 +3,33 @@
  * 
  * Provides unified interface for cuCollections static_map
  * Matches the API of simple_hash.cuh for seamless switching
+ * 
+ * If CUCO_AVAILABLE is not defined or 0, provides stub implementations
+ * that fall back to simple hash
  */
 
 #ifndef CUDA_ORDERBOOK_CUCO_WRAPPER_H
 #define CUDA_ORDERBOOK_CUCO_WRAPPER_H
 
 #include "types.h"
-#include <cuco/static_map.cuh>
+#include "simple_hash.cuh"
 #include <cuda_runtime.h>
+
+// Check if cuCollections is available
+#ifndef CUCO_AVAILABLE
+#define CUCO_AVAILABLE 0
+#endif
+
+#if CUCO_AVAILABLE
+#include <cuco/static_map.cuh>
+#endif
 
 namespace cuda_orderbook {
 
+#if CUCO_AVAILABLE
 // Type alias for cuCollections map
 using CucoMap = cuco::static_map<int32_t, int32_t>;
+#endif
 
 // Empty key sentinel for cuCollections
 constexpr int32_t CUCO_EMPTY_KEY = -1;
@@ -32,6 +46,7 @@ constexpr int32_t CUCO_EMPTY_VALUE = -1;
  * @return Pointer to allocated map (cast to void* for storage in HashOrderbookState)
  */
 inline void* cuco_create_host(int32_t capacity) {
+#if CUCO_AVAILABLE
     // cuCollections requires capacity to be at least 2x expected inserts
     // and prefers power-of-2 sizes
     int32_t cuco_capacity = capacity * 2;
@@ -50,6 +65,12 @@ inline void* cuco_create_host(int32_t capacity) {
     );
     
     return static_cast<void*>(map);
+#else
+    // Fallback to simple hash if cuCollections not available
+    SimpleHashTable* table = new SimpleHashTable();
+    *table = simple_hash_create_host(capacity * 2);
+    return static_cast<void*>(table);
+#endif
 }
 
 /**
@@ -57,8 +78,14 @@ inline void* cuco_create_host(int32_t capacity) {
  */
 inline void cuco_destroy_host(void* map_ptr) {
     if (map_ptr) {
+#if CUCO_AVAILABLE
         CucoMap* map = static_cast<CucoMap*>(map_ptr);
         delete map;
+#else
+        SimpleHashTable* table = static_cast<SimpleHashTable*>(map_ptr);
+        simple_hash_destroy_host(table);
+        delete table;
+#endif
     }
 }
 
@@ -79,12 +106,17 @@ __device__ bool cuco_insert(
     int32_t key,
     int32_t value
 ) {
+#if CUCO_AVAILABLE
     CucoMap* map = static_cast<CucoMap*>(map_ptr);
     
     // Insert key-value pair (overwrites if key exists)
     auto result = map->insert(cuco::make_pair(key, value));
     
     return true;  // cuCollections insert always succeeds or updates
+#else
+    SimpleHashTable* table = static_cast<SimpleHashTable*>(map_ptr);
+    return simple_hash_insert(table, key, value);
+#endif
 }
 
 /**
@@ -98,6 +130,7 @@ __device__ int32_t cuco_find(
     void* map_ptr,
     int32_t key
 ) {
+#if CUCO_AVAILABLE
     CucoMap* map = static_cast<CucoMap*>(map_ptr);
     
     // Find returns iterator-like object
@@ -109,6 +142,10 @@ __device__ int32_t cuco_find(
     }
     
     return -1;  // Not found
+#else
+    SimpleHashTable* table = static_cast<SimpleHashTable*>(map_ptr);
+    return simple_hash_find(table, key);
+#endif
 }
 
 /**
@@ -122,12 +159,17 @@ __device__ bool cuco_erase(
     void* map_ptr,
     int32_t key
 ) {
+#if CUCO_AVAILABLE
     CucoMap* map = static_cast<CucoMap*>(map_ptr);
     
     // Erase key
     auto result = map->erase(key);
     
     return result > 0;  // Returns number of elements erased
+#else
+    SimpleHashTable* table = static_cast<SimpleHashTable*>(map_ptr);
+    return simple_hash_erase(table, key);
+#endif
 }
 
 /**
@@ -137,8 +179,13 @@ __device__ bool cuco_contains(
     void* map_ptr,
     int32_t key
 ) {
+#if CUCO_AVAILABLE
     CucoMap* map = static_cast<CucoMap*>(map_ptr);
     return map->contains(key);
+#else
+    SimpleHashTable* table = static_cast<SimpleHashTable*>(map_ptr);
+    return simple_hash_contains(table, key);
+#endif
 }
 
 // ============================================================================
