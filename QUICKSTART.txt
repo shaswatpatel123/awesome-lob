@@ -1,0 +1,123 @@
+================================================================================
+                    CUDA ORDERBOOK - QUICKSTART
+================================================================================
+
+📍 LOCATION: /Users/kvlnraju/Desktop/courses/semester_3/GPU/Project/awesome-lob
+
+================================================================================
+⚡ FASTEST WAY TO RUN EVERYTHING
+================================================================================
+
+cd /Users/kvlnraju/Desktop/courses/semester_3/GPU/Project/awesome-lob
+./run_all.sh
+
+This will:
+  1. Clean previous builds
+  2. Build core library
+  3. Build test suite
+  4. Run all 13 tests (CPU vs GPU)
+  5. Build benchmarks
+  6. Run small benchmark
+
+Expected time: 2-3 minutes
+
+================================================================================
+📋 STEP-BY-STEP (If you prefer manual control)
+================================================================================
+
+# 1. Build core library
+cd build
+cmake ..
+make
+cd ..
+
+# 2. Build and run tests (MOST IMPORTANT!)
+cd tests
+make -f Makefile_tests
+./test_suite
+cd ..
+
+# 3. Build and run benchmarks (optional)
+cd benchmarks
+make
+make run-small
+cd ..
+
+================================================================================
+✅ SUCCESS CRITERIA
+================================================================================
+
+You should see:
+  ✓ All 13 tests PASSED
+  ✓ CPU == GPU for all scenarios
+  ✓ Message: "🎉 ALL TESTS PASSED!"
+
+If ANY test fails → STOP and debug before proceeding!
+
+================================================================================
+📁 KEY FILES
+================================================================================
+
+RUN_INSTRUCTIONS.md    → Detailed step-by-step guide
+run_all.sh            → Automated build & test script
+TESTING_COMPLETE.md   → Overview of test suite
+
+tests/
+  test_suite.cu       → Main test file (13 tests)
+  data_generator.cpp  → Synthetic data generation
+  TEST_SUITE_README.md → Test documentation
+
+================================================================================
+🐛 IF SOMETHING FAILS
+================================================================================
+
+Check:
+  ☑ CUDA installed: nvcc --version
+  ☑ GPU available: nvidia-smi
+  ☑ In correct directory: pwd (should show .../awesome-lob)
+
+Read error message carefully!
+Check RUN_INSTRUCTIONS.md for debugging tips.
+
+================================================================================
+⏱️ EXPECTED TIMES
+================================================================================
+
+Build core library:  ~30 seconds
+Build test suite:    ~20 seconds
+Run all tests:       ~5-10 seconds  ⭐ Most important!
+Build benchmarks:    ~15 seconds
+Run benchmarks:      ~10-60 seconds
+
+Total: 2-3 minutes
+
+================================================================================
+🎯 WHAT TO DO NEXT
+================================================================================
+
+After all tests pass:
+
+1. Run more benchmarks:
+   cd benchmarks
+   make run-medium
+   make run-large
+
+2. Profile GPU code:
+   cd benchmarks
+   make profile-nsys
+
+3. Add custom tests:
+   Edit tests/data_generator.cpp
+   Add scenarios, rebuild, retest
+
+================================================================================
+💡 TIP
+================================================================================
+
+Always run tests after making code changes!
+Tests catch bugs immediately.
+
+Command: cd tests && ./test_suite
+
+================================================================================
+

@@ -1,0 +1,49 @@
+# Makefile for Test Suite
+
+# Compiler settings
+NVCC = nvcc
+NVCC_FLAGS = -std=c++14 -O2 -I../include --compiler-options -Wall
+GPU_ARCH = sm_52
+
+# Source files
+CPU_SOURCES = ../src/orderbook_cpu.cpp data_generator.cpp
+CUDA_SOURCES = ../src/kernels.cu ../src/operations.cu
+TEST_SOURCE = test_suite.cu
+
+# Output
+TEST_BIN = test_suite
+
+# Targets
+.PHONY: all clean run help
+
+all: $(TEST_BIN)
+
+$(TEST_BIN): $(TEST_SOURCE) $(CPU_SOURCES) $(CUDA_SOURCES)
+	@echo "Compiling test suite..."
+	$(NVCC) $(NVCC_FLAGS) -arch=$(GPU_ARCH) \
+		$(TEST_SOURCE) \
+		$(CPU_SOURCES) \
+		$(CUDA_SOURCES) \
+		-o $(TEST_BIN)
+	@echo "Build complete: $(TEST_BIN)"
+
+clean:
+	@echo "Cleaning..."
+	rm -f $(TEST_BIN)
+	@echo "Clean complete"
+
+run: $(TEST_BIN)
+	@echo "Running comprehensive test suite..."
+	@echo ""
+	./$(TEST_BIN)
+
+help:
+	@echo "Available targets:"
+	@echo "  make         - Build the test suite"
+	@echo "  make clean   - Remove build artifacts"
+	@echo "  make run     - Run all tests"
+	@echo ""
+	@echo "GPU Architecture:"
+	@echo "  Current: $(GPU_ARCH)"
+	@echo "  Change with: make GPU_ARCH=sm_86"
+

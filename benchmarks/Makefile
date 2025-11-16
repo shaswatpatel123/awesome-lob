@@ -10,11 +10,12 @@ NVCC_FLAGS = -std=c++14 -O3 -I../include
 #   RTX 2080/2080 Ti: sm_75
 #   RTX 3080/3090: sm_86
 #   RTX 4080/4090: sm_89
-GPU_ARCH = sm_70
+#   GTX TITAN X: sm_52
+GPU_ARCH = sm_52
 
 # Source files
 CPU_SOURCES = ../src/orderbook_cpu.cpp
-CUDA_SOURCES = ../src/kernels.cu ../src/operations.cu ../src/utils.cu
+CUDA_SOURCES = ../src/kernels.cu ../src/operations.cu
 BENCHMARK_SOURCE = benchmark_cpu_vs_gpu.cpp
 
 # Output
