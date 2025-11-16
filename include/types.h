@@ -151,6 +151,98 @@ struct L2State {
     }
 };
 
+// ============================================================================
+// Hash-based LOB structures
+// ============================================================================
+
+// Hash implementation selection
+enum HashImplementation {
+    HASH_CUCOLLECTIONS = 0,  // Default: use NVIDIA cuCollections (fastest)
+    HASH_SIMPLE_CUDA = 1     // Fallback: simple CUDA hash table
+};
+
+// Simple CUDA hash table (open addressing with linear probing)
+struct SimpleHashTable {
+    int32_t* keys;       // order_id (-1 = empty slot)
+    int32_t* values;     // array index into orders array
+    int32_t capacity;    // Hash table size (power of 2)
+    int32_t size;        // Current number of entries
+    int32_t mask;        // capacity - 1, for fast modulo
+    
+    SimpleHashTable() 
+        : keys(nullptr), values(nullptr), 
+          capacity(0), size(0), mask(0) {}
+};
+
+// Hash-accelerated orderbook state (single orderbook)
+struct HashOrderbookState {
+    // Order arrays (sorted on-demand)
+    Order* asks;
+    Order* bids;
+    Trade* trades;
+    
+    // Hash indices for O(1) lookup by order_id
+    // Type is void* to support both cuCollections and SimpleHashTable
+    void* ask_hash_map;    // Points to cuco::static_map or SimpleHashTable
+    void* bid_hash_map;
+    
+    // Sort state tracking
+    bool asks_sorted;
+    bool bids_sorted;
+    
+    // Configuration
+    HashImplementation hash_impl;
+    int32_t n_orders;      // Max orders per side
+    int32_t n_trades;      // Max trades to record
+    
+    HashOrderbookState()
+        : asks(nullptr), bids(nullptr), trades(nullptr),
+          ask_hash_map(nullptr), bid_hash_map(nullptr),
+          asks_sorted(false), bids_sorted(false),
+          hash_impl(HASH_CUCOLLECTIONS),
+          n_orders(0), n_trades(0) {}
+};
+
+// Batch of hash-accelerated orderbooks
+struct HashOrderbookBatch {
+    HashOrderbookState* states;  // Array of orderbook states
+    int32_t num_books;           // Number of orderbooks in batch
+    
+    // Flattened device arrays (for compatibility)
+    Order* d_asks;
+    Order* d_bids;
+    Trade* d_trades;
+    int32_t n_orders_per_book;
+    int32_t n_trades_per_book;
+    
+    // Configuration
+    HashImplementation hash_impl;
+    
+    HashOrderbookBatch()
+        : states(nullptr), num_books(0),
+          d_asks(nullptr), d_bids(nullptr), d_trades(nullptr),
+          n_orders_per_book(0), n_trades_per_book(0),
+          hash_impl(HASH_CUCOLLECTIONS) {}
+    
+    // Get specific orderbook state
+    __host__ __device__ inline HashOrderbookState* get_state(int book_idx) const {
+        return &states[book_idx];
+    }
+    
+    // Get device pointers (for backward compatibility)
+    __host__ __device__ inline Order* get_asks(int book_idx) const {
+        return d_asks + (book_idx * n_orders_per_book);
+    }
+    
+    __host__ __device__ inline Order* get_bids(int book_idx) const {
+        return d_bids + (book_idx * n_orders_per_book);
+    }
+    
+    __host__ __device__ inline Trade* get_trades(int book_idx) const {
+        return d_trades + (book_idx * n_trades_per_book);
+    }
+};
+
 } // namespace cuda_orderbook
 
 #endif // CUDA_ORDERBOOK_TYPES_H

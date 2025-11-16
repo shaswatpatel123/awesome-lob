@@ -14,13 +14,25 @@ find_package(CUDAToolkit REQUIRED)
 set(CMAKE_CUDA_FLAGS "${CMAKE_CUDA_FLAGS} -O3")
 set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -O3 -Wall")
 
-# CUDA architectures - modify based on your GPU
+# CUDA architectures - cuCollections requires sm_70+
 # Common architectures:
 # - Ampere (RTX 30xx, A100): 86
 # - Turing (RTX 20xx): 75
 # - Volta (V100): 70
-# - Pascal (GTX 10xx, P100): 60, 61
-set(CMAKE_CUDA_ARCHITECTURES "75;86")
+set(CMAKE_CUDA_ARCHITECTURES "70;75;86")
+
+# ============================================================================
+# cuCollections Dependency
+# ============================================================================
+include(FetchContent)
+
+FetchContent_Declare(
+    cuco
+    GIT_REPOSITORY https://github.com/NVIDIA/cuCollections.git
+    GIT_TAG        dev  # Use stable tag in production
+)
+
+FetchContent_MakeAvailable(cuco)
 
 # Include directories
 include_directories(${CMAKE_SOURCE_DIR}/include)
@@ -31,9 +43,14 @@ include_directories(${CMAKE_SOURCE_DIR}/include)
 
 # Source files for the orderbook library
 set(CUDA_ORDERBOOK_SOURCES
-    # Team 1 & 2 implemented:
-    src/operations.cu    # Device functions: add, cancel, matching
-    src/kernels.cu       # CUDA kernels: all operations
+    # Original implementation:
+    src/operations.cu       # Device functions: add, cancel, matching
+    src/kernels.cu          # CUDA kernels: all operations
+    
+    # Hash-based implementation:
+    src/hash_operations.cu  # Hash-accelerated device functions
+    src/hash_kernels.cu     # Hash-accelerated kernels
+    
     # src/utils.cu         # Team 1: Days 3-4 (TODO)
     # src/queries.cu       # Team 3: Days 2-4 (TODO)
     # src/orderbook.cu     # Team 3: Days 5-8 (TODO)
@@ -54,8 +71,11 @@ target_include_directories(cuda_orderbook PUBLIC
     $<INSTALL_INTERFACE:include>
 )
 
-# Link CUDA runtime
-target_link_libraries(cuda_orderbook PUBLIC CUDA::cudart)
+# Link CUDA runtime and cuCollections
+target_link_libraries(cuda_orderbook PUBLIC 
+    CUDA::cudart
+    cuco::cuco
+)
 
 # ============================================================================
 # Examples (Team 3: Days 7-8)

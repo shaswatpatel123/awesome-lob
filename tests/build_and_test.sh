@@ -43,9 +43,9 @@ else
     exit 1
 fi
 
-# Step 2: Compile test program
+# Step 2: Compile test programs
 echo ""
-echo -e "${YELLOW}Step 2: Compiling test program...${NC}"
+echo -e "${YELLOW}Step 2: Compiling test programs...${NC}"
 cd ../tests
 
 # Detect CUDA architecture
@@ -72,6 +72,17 @@ else
     echo -e "${YELLOW}Warning: nvidia-smi not found, using default architecture 75${NC}"
 fi
 
+# Note: Hash LOB tests require sm_70+ for cuCollections
+if [ "$ARCH" -lt "70" ]; then
+    echo -e "${YELLOW}Warning: Hash LOB tests require CUDA architecture >= sm_70${NC}"
+    echo -e "${YELLOW}Skipping hash LOB tests on sm_$ARCH${NC}"
+    COMPILE_HASH_TESTS=false
+else
+    COMPILE_HASH_TESTS=true
+fi
+
+# Compile original matching test
+echo "Compiling test_matching..."
 nvcc -arch=sm_$ARCH \
      -I../include \
      -L../build \
@@ -80,10 +91,28 @@ nvcc -arch=sm_$ARCH \
      -o test_matching
 
 if [ $? -eq 0 ]; then
-    echo -e "${GREEN}✓ Test program compiled successfully${NC}"
+    echo -e "${GREEN}✓ test_matching compiled successfully${NC}"
 else
-    echo -e "${RED}✗ Test compilation failed${NC}"
+    echo -e "${RED}✗ test_matching compilation failed${NC}"
     exit 1
+fi
+
+# Compile hash LOB test (if supported)
+if [ "$COMPILE_HASH_TESTS" = true ]; then
+    echo "Compiling test_hash_lob..."
+    nvcc -arch=sm_$ARCH \
+         -I../include \
+         -L../build \
+         -lcuda_orderbook \
+         test_hash_lob.cu \
+         -o test_hash_lob
+    
+    if [ $? -eq 0 ]; then
+        echo -e "${GREEN}✓ test_hash_lob compiled successfully${NC}"
+    else
+        echo -e "${RED}✗ test_hash_lob compilation failed${NC}"
+        exit 1
+    fi
 fi
 
 # Step 3: Run tests
@@ -94,20 +123,41 @@ echo ""
 # Set library path
 export LD_LIBRARY_PATH=../build:$LD_LIBRARY_PATH
 
-./test_matching
+ALL_PASSED=true
 
-TEST_RESULT=$?
+# Run original matching tests
+echo -e "${YELLOW}Running original LOB tests...${NC}"
+./test_matching
+if [ $? -eq 0 ]; then
+    echo -e "${GREEN}✓ Original LOB tests passed${NC}"
+else
+    echo -e "${RED}✗ Original LOB tests failed${NC}"
+    ALL_PASSED=false
+fi
+
+# Run hash LOB tests (if compiled)
+if [ "$COMPILE_HASH_TESTS" = true ]; then
+    echo ""
+    echo -e "${YELLOW}Running hash-accelerated LOB tests...${NC}"
+    ./test_hash_lob
+    if [ $? -eq 0 ]; then
+        echo -e "${GREEN}✓ Hash LOB tests passed${NC}"
+    else
+        echo -e "${RED}✗ Hash LOB tests failed${NC}"
+        ALL_PASSED=false
+    fi
+fi
 
 echo ""
-if [ $TEST_RESULT -eq 0 ]; then
+if [ "$ALL_PASSED" = true ]; then
     echo -e "${GREEN}=========================================${NC}"
     echo -e "${GREEN}  ✓ ALL TESTS PASSED!${NC}"
     echo -e "${GREEN}=========================================${NC}"
+    exit 0
 else
     echo -e "${RED}=========================================${NC}"
     echo -e "${RED}  ✗ SOME TESTS FAILED${NC}"
     echo -e "${RED}=========================================${NC}"
+    exit 1
 fi
-
-exit $TEST_RESULT
 

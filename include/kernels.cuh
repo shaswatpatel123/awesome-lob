@@ -189,6 +189,130 @@ __global__ void reset_trades_kernel(
     int num_books
 );
 
+// ============================================================================
+// HASH-ACCELERATED LOB KERNELS
+// ============================================================================
+
+/**
+ * Initialize hash-accelerated orderbooks
+ * 
+ * @param batch Batch of hash orderbooks
+ */
+__global__ void init_hash_orderbooks_kernel(
+    HashOrderbookBatch batch
+);
+
+/**
+ * Add orders to hash-accelerated orderbooks
+ * 
+ * @param batch Batch of hash orderbooks
+ * @param messages Messages to process (one per orderbook)
+ * @param num_books Number of orderbooks
+ */
+__global__ void add_order_hash_kernel(
+    HashOrderbookBatch batch,
+    const Message* messages,
+    int num_books
+);
+
+/**
+ * Cancel orders from hash-accelerated orderbooks
+ * 
+ * @param batch Batch of hash orderbooks
+ * @param messages Cancel messages (one per orderbook)
+ * @param num_books Number of orderbooks
+ */
+__global__ void cancel_order_hash_kernel(
+    HashOrderbookBatch batch,
+    const Message* messages,
+    int num_books
+);
+
+/**
+ * Match orders in hash-accelerated orderbooks
+ * 
+ * @param batch Batch of hash orderbooks
+ * @param messages Messages to match (one per orderbook)
+ * @param num_books Number of orderbooks
+ */
+__global__ void match_order_hash_kernel(
+    HashOrderbookBatch batch,
+    const Message* messages,
+    int num_books
+);
+
+/**
+ * Process array of messages sequentially for each hash orderbook
+ * MAIN KERNEL for hash-accelerated LOB
+ * 
+ * @param batch Batch of hash orderbooks
+ * @param messages Array of messages [book0_msgs, book1_msgs, ...]
+ * @param num_messages_per_book Number of messages per orderbook
+ * @param num_books Number of orderbooks
+ */
+__global__ void process_messages_hash_kernel(
+    HashOrderbookBatch batch,
+    const Message* messages,
+    int num_messages_per_book,
+    int num_books
+);
+
+/**
+ * Get best bid and ask for hash orderbooks
+ * 
+ * @param batch Batch of hash orderbooks
+ * @param best_asks Output array of best ask prices (length: num_books)
+ * @param best_bids Output array of best bid prices (length: num_books)
+ * @param num_books Number of orderbooks
+ */
+__global__ void get_best_bid_ask_hash_kernel(
+    const HashOrderbookBatch batch,
+    int32_t* best_asks,
+    int32_t* best_bids,
+    int num_books
+);
+
+/**
+ * Get volume at specific price level for hash orderbooks
+ * 
+ * @param batch Batch of hash orderbooks
+ * @param prices Price levels to query (one per orderbook)
+ * @param sides Side to query: 0=ask, 1=bid (one per orderbook)
+ * @param volumes Output array of volumes (length: num_books)
+ * @param num_books Number of orderbooks
+ */
+__global__ void get_volume_at_price_hash_kernel(
+    const HashOrderbookBatch batch,
+    const int32_t* prices,
+    const int32_t* sides,
+    int32_t* volumes,
+    int num_books
+);
+
+/**
+ * Reset trades array for hash orderbooks
+ * 
+ * @param batch Batch of hash orderbooks
+ * @param num_books Number of orderbooks
+ */
+__global__ void reset_trades_hash_kernel(
+    HashOrderbookBatch batch,
+    int num_books
+);
+
+/**
+ * Copy hash orderbook state
+ * 
+ * @param src_batch Source batch
+ * @param dst_batch Destination batch
+ * @param num_books Number of orderbooks
+ */
+__global__ void copy_hash_orderbooks_kernel(
+    const HashOrderbookBatch src_batch,
+    HashOrderbookBatch dst_batch,
+    int num_books
+);
+
 } // namespace cuda_orderbook
 
 #endif // CUDA_ORDERBOOK_KERNELS_H
