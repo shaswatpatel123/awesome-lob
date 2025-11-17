@@ -3,6 +3,12 @@
 
 #include <cstdint>
 
+// Make CUDA keywords work in both CUDA and regular C++ compilation
+#ifndef __CUDACC__
+#define __host__
+#define __device__
+#endif
+
 namespace cuda_orderbook {
 
 // Constants
@@ -118,8 +124,8 @@ struct OrderbookBatch {
     
     OrderbookBatch() 
         : d_asks(nullptr), d_bids(nullptr), d_trades(nullptr),
-          h_asks(nullptr), h_bids(nullptr), h_trades(nullptr),
-          num_books(0), n_orders_per_book(0), n_trades_per_book(0) {}
+          num_books(0), n_orders_per_book(0), n_trades_per_book(0),
+          h_asks(nullptr), h_bids(nullptr), h_trades(nullptr) {}
     
     // Get device pointer to specific orderbook's asks
     __host__ __device__ inline Order* get_asks(int book_idx) const {

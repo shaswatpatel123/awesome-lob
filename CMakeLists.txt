@@ -1,4 +1,14 @@
 cmake_minimum_required(VERSION 3.18)
+
+# CUDA architectures - MUST be set BEFORE project()
+# Common architectures:
+# - Ampere (RTX 30xx, A100): 86
+# - Turing (RTX 20xx): 75
+# - Volta (V100): 70
+# - Pascal (GTX 10xx, P100): 60, 61
+# - Maxwell (GTX TITAN X): 52
+set(CMAKE_CUDA_ARCHITECTURES 52)
+
 project(CudaOrderbook CUDA CXX)
 
 # CUDA and C++ standards
@@ -7,21 +17,9 @@ set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CUDA_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
-# Find CUDA toolkit
-find_package(CUDAToolkit REQUIRED)
-
 # Compiler flags
 set(CMAKE_CUDA_FLAGS "${CMAKE_CUDA_FLAGS} -O3")
 set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -O3 -Wall")
-
-# CUDA architectures - modify based on your GPU
-# Common architectures:
-# - Ampere (RTX 30xx, A100): 86
-# - Turing (RTX 20xx): 75
-# - Volta (V100): 70
-# - Pascal (GTX 10xx, P100): 60, 61
-# - Maxwell (GTX TITAN X): 52
-set(CMAKE_CUDA_ARCHITECTURES 52)
 
 # Include directories
 include_directories(${CMAKE_SOURCE_DIR}/include)
@@ -35,7 +33,7 @@ set(CUDA_ORDERBOOK_SOURCES
     # Team 1 & 2 implemented:
     src/operations.cu    # Device functions: add, cancel, matching
     src/kernels.cu       # CUDA kernels: all operations
-    # src/utils.cu         # Team 1: Days 3-4 (TODO)
+    src/utils.cu         # Utility functions: memory management, init
     # src/queries.cu       # Team 3: Days 2-4 (TODO)
     # src/orderbook.cu     # Team 3: Days 5-8 (TODO)
 )
@@ -54,9 +52,6 @@ target_include_directories(cuda_orderbook PUBLIC
     $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
     $<INSTALL_INTERFACE:include>
 )
-
-# Link CUDA runtime
-target_link_libraries(cuda_orderbook PUBLIC CUDA::cudart)
 
 # ============================================================================
 # Examples (Team 3: Days 7-8)

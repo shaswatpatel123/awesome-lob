@@ -15,7 +15,9 @@
 #include <iostream>
 #include <iomanip>
 #include <cstring>
+#include <cstdlib>
 #include <chrono>
+#include <algorithm>
 
 using namespace cuda_orderbook;
 
@@ -402,22 +404,28 @@ bool integration_test_scenario(TestStats& stats, const char* name,
 // LEVEL 3: FUNCTIONAL TESTS - CPU vs GPU with Random Data
 // ============================================================================
 
-bool functional_test_random(TestStats& stats, int num_messages, const char* size_name) {
+bool functional_test_random(TestStats& stats, int num_messages, const char* size_name, int max_orders_override = -1) {
     print_test_header((std::string("Functional Test: Random ") + size_name).c_str());
     
     std::cout << "  Testing with " << num_messages << " random messages..." << std::endl;
     
+    // Scale orders and trades based on message count or use override
+    int n_orders = (max_orders_override > 0) ? max_orders_override : std::max(200, num_messages / 10);
+    int n_trades = std::max(100, num_messages / 20);  // At least 100, or 5% of messages
+    
+    std::cout << "  Orders per side: " << n_orders << ", Max trades: " << n_trades << std::endl;
+    
     // Setup
     OrderbookCPU cpu_book;
-    cpu_book.allocate(200, 100);
+    cpu_book.allocate(n_orders, n_trades);
     
     OrderbookBatch gpu_batch;
     gpu_batch.num_books = 1;
-    gpu_batch.n_orders_per_book = 200;
-    gpu_batch.n_trades_per_book = 100;
-    CUDA_CHECK(cudaMalloc(&gpu_batch.d_asks, 200 * sizeof(Order)));
-    CUDA_CHECK(cudaMalloc(&gpu_batch.d_bids, 200 * sizeof(Order)));
-    CUDA_CHECK(cudaMalloc(&gpu_batch.d_trades, 100 * sizeof(Trade)));
+    gpu_batch.n_orders_per_book = n_orders;
+    gpu_batch.n_trades_per_book = n_trades;
+    CUDA_CHECK(cudaMalloc(&gpu_batch.d_asks, n_orders * sizeof(Order)));
+    CUDA_CHECK(cudaMalloc(&gpu_batch.d_bids, n_orders * sizeof(Order)));
+    CUDA_CHECK(cudaMalloc(&gpu_batch.d_trades, n_trades * sizeof(Trade)));
     
     init_orderbooks_kernel<<<1, 256>>>(gpu_batch, 1);
     CUDA_CHECK(cudaDeviceSynchronize());
@@ -487,11 +495,21 @@ bool functional_test_random(TestStats& stats, int num_messages, const char* size
 // MAIN TEST RUNNER
 // ============================================================================
 
-int main() {
+int main(int argc, char** argv) {
     std::cout << "\n" << std::string(60, '=') << std::endl;
     std::cout << "CUDA ORDERBOOK TEST SUITE" << std::endl;
     std::cout << "Comprehensive Testing: Unit → Integration → Functional" << std::endl;
     std::cout << std::string(60, '=') << std::endl;
+    
+    // Parse command-line arguments for functional test scaling
+    int max_messages = (argc > 1) ? std::atoi(argv[1]) : 10000;
+    int max_orders = (argc > 2) ? std::atoi(argv[2]) : 1000;
+    
+    if (argc > 1) {
+        std::cout << "\nCustom Functional Test Configuration:" << std::endl;
+        std::cout << "  Max messages: " << max_messages << std::endl;
+        std::cout << "  Max orders per side: " << max_orders << std::endl;
+    }
     
     TestStats stats;
     
@@ -528,9 +546,18 @@ int main() {
     std::cout << "LEVEL 3: FUNCTIONAL TESTS (Random Data, CPU vs GPU)" << std::endl;
     std::cout << std::string(60, '=') << std::endl;
     
-    functional_test_random(stats, 100, "Small (100 messages)");
-    functional_test_random(stats, 500, "Medium (500 messages)");
-    functional_test_random(stats, 1000, "Large (1000 messages)");
+    // Use custom values if provided, otherwise use defaults with progressive scaling
+    functional_test_random(stats, 100, "Small (100 messages)", max_orders);
+    functional_test_random(stats, 500, "Medium (500 messages)", max_orders);
+    functional_test_random(stats, 1000, "Large (1000 messages)", max_orders);
+    
+    // Only run larger tests if max_messages allows
+    if (max_messages >= 5000) {
+        functional_test_random(stats, 5000, "Very Large (5000 messages)", max_orders);
+    }
+    if (max_messages >= 10000) {
+        functional_test_random(stats, 10000, "Massive (10000 messages)", max_orders);
+    }
     
     // ========================================================================
     // FINAL SUMMARY

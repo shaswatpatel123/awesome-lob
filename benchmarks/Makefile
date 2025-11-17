@@ -2,7 +2,7 @@
 
 # Compiler settings
 NVCC = nvcc
-NVCC_FLAGS = -std=c++14 -O3 -I../include
+NVCC_FLAGS = -std=c++14 -O3 -I../include --compiler-options -Wall -rdc=true
 
 # GPU Architecture (adjust for your GPU)
 # Common options:
@@ -15,8 +15,8 @@ GPU_ARCH = sm_52
 
 # Source files
 CPU_SOURCES = ../src/orderbook_cpu.cpp
-CUDA_SOURCES = ../src/kernels.cu ../src/operations.cu
-BENCHMARK_SOURCE = benchmark_cpu_vs_gpu.cpp
+CUDA_SOURCES = ../src/kernels.cu ../src/operations.cu ../src/utils.cu
+BENCHMARK_SOURCE = benchmark_cpu_vs_gpu.cu
 
 # Output
 BENCHMARK_BIN = benchmark_cpu_vs_gpu
