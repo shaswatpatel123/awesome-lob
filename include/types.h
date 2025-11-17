@@ -126,8 +126,8 @@ struct OrderbookBatch {
         : d_asks(nullptr), d_bids(nullptr), d_trades(nullptr),
           num_books(0), n_orders_per_book(0), n_trades_per_book(0),
           h_asks(nullptr), h_bids(nullptr), h_trades(nullptr) {}
-    
     // Get device pointer to specific orderbook's asks
+    //
     __host__ __device__ inline Order* get_asks(int book_idx) const {
         return d_asks + (book_idx * n_orders_per_book);
     }

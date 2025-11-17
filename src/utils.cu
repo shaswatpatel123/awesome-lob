@@ -61,6 +61,7 @@ bool allocate_host_orderbook_batch(
     batch.n_orders_per_book = n_orders_per_book;
     batch.n_trades_per_book = n_trades_per_book;
 
+
     batch.h_asks = new Order[num_books * n_orders_per_book];
     batch.h_bids = new Order[num_books * n_orders_per_book];
     batch.h_trades = new Trade[num_books * n_trades_per_book];
@@ -146,4 +147,5 @@ void init_orderbooks_device(const OrderbookBatch& batch) {
 }
 
 } // namespace cuda_orderbook
+
 

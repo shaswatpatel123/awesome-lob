@@ -212,6 +212,197 @@ __device__ int get_top_bid_order_idx(const Order* bids, int n_orders) {
 }
 
 // ============================================================================
+// PARALLEL VERSIONS - Using all threads in block for reduction
+// ============================================================================
+
+/**
+ * Parallel get top ask order - Uses all threads for reduction
+ * Much faster than sequential version when blockDim.x > 1
+ * 
+ * Complexity: O(n_orders / blockDim.x + log(blockDim.x))
+ * Example: 1000 orders, 256 threads = O(4 + 8) = O(12) vs O(1000) sequential
+ */
+__device__ int get_top_ask_order_idx_parallel(const Order* asks, int n_orders) {
+    int tid = threadIdx.x;
+    int stride = blockDim.x;
+    
+    // Step 1: Each thread finds best in its subset
+    int local_best_idx = -1;
+    int32_t local_min_price = MAX_INT;
+    int32_t local_min_time_sec = MAX_INT;
+    int32_t local_min_time_ns = MAX_INT;
+    
+    // Strided loop: thread 0 checks 0,256,512..., thread 1 checks 1,257,513...
+    for (int i = tid; i < n_orders; i += stride) {
+        if (asks[i].price == EMPTY_PRICE) continue;
+        
+        int32_t price = asks[i].price;
+        
+        // Check if this order is better (lower price, then earlier time)
+        bool is_better = false;
+        if (price < local_min_price) {
+            is_better = true;
+        } else if (price == local_min_price) {
+            if (asks[i].time_sec < local_min_time_sec) {
+                is_better = true;
+            } else if (asks[i].time_sec == local_min_time_sec && 
+                       asks[i].time_ns < local_min_time_ns) {
+                is_better = true;
+            }
+        }
+        
+        if (is_better) {
+            local_best_idx = i;
+            local_min_price = price;
+            local_min_time_sec = asks[i].time_sec;
+            local_min_time_ns = asks[i].time_ns;
+        }
+    }
+    
+    // Step 2: Store results in shared memory
+    // Use dynamic size based on blockDim.x (supports 32 to 1024 threads)
+    __shared__ int shared_idx[1024];
+    __shared__ int32_t shared_price[1024];
+    __shared__ int32_t shared_time_sec[1024];
+    __shared__ int32_t shared_time_ns[1024];
+    
+    if (tid < blockDim.x) {
+        shared_idx[tid] = local_best_idx;
+        shared_price[tid] = local_min_price;
+        shared_time_sec[tid] = local_min_time_sec;
+        shared_time_ns[tid] = local_min_time_ns;
+    }
+    __syncthreads();
+    
+    // Step 3: Tree reduction - combine results
+    for (int s = blockDim.x / 2; s > 0; s >>= 1) {
+        if (tid < s) {
+            int other = tid + s;
+            
+            // Bounds check for safety (handles non-power-of-2 block sizes)
+            if (other < blockDim.x) {
+                // Determine if other thread has better order
+                bool other_is_better = false;
+                if (shared_price[other] < shared_price[tid]) {
+                    other_is_better = true;
+                } else if (shared_price[other] == shared_price[tid]) {
+                    if (shared_time_sec[other] < shared_time_sec[tid]) {
+                        other_is_better = true;
+                    } else if (shared_time_sec[other] == shared_time_sec[tid] &&
+                              shared_time_ns[other] < shared_time_ns[tid]) {
+                        other_is_better = true;
+                    }
+                }
+                
+                if (other_is_better) {
+                    shared_idx[tid] = shared_idx[other];
+                    shared_price[tid] = shared_price[other];
+                    shared_time_sec[tid] = shared_time_sec[other];
+                    shared_time_ns[tid] = shared_time_ns[other];
+                }
+            }
+        }
+        __syncthreads();
+    }
+    
+    // Step 4: Thread 0 has final result
+    return shared_idx[0];
+}
+
+/**
+ * Parallel get top bid order - Uses all threads for reduction
+ * Much faster than sequential version when blockDim.x > 1
+ * 
+ * Complexity: O(n_orders / blockDim.x + log(blockDim.x))
+ */
+__device__ int get_top_bid_order_idx_parallel(const Order* bids, int n_orders) {
+    int tid = threadIdx.x;
+    int stride = blockDim.x;
+    
+    // Step 1: Each thread finds best in its subset
+    int local_best_idx = -1;
+    int32_t local_max_price = -1;
+    int32_t local_min_time_sec = MAX_INT;
+    int32_t local_min_time_ns = MAX_INT;
+    
+    // Strided loop
+    for (int i = tid; i < n_orders; i += stride) {
+        if (bids[i].price == EMPTY_PRICE) continue;
+        
+        int32_t price = bids[i].price;
+        
+        // Check if this order is better (higher price, then earlier time)
+        bool is_better = false;
+        if (price > local_max_price) {
+            is_better = true;
+        } else if (price == local_max_price) {
+            if (bids[i].time_sec < local_min_time_sec) {
+                is_better = true;
+            } else if (bids[i].time_sec == local_min_time_sec && 
+                       bids[i].time_ns < local_min_time_ns) {
+                is_better = true;
+            }
+        }
+        
+        if (is_better) {
+            local_best_idx = i;
+            local_max_price = price;
+            local_min_time_sec = bids[i].time_sec;
+            local_min_time_ns = bids[i].time_ns;
+        }
+    }
+    
+    // Step 2: Store results in shared memory
+    // Use dynamic size based on blockDim.x (supports 32 to 1024 threads)
+    __shared__ int shared_idx[1024];
+    __shared__ int32_t shared_price[1024];
+    __shared__ int32_t shared_time_sec[1024];
+    __shared__ int32_t shared_time_ns[1024];
+    
+    if (tid < blockDim.x) {
+        shared_idx[tid] = local_best_idx;
+        shared_price[tid] = local_max_price;
+        shared_time_sec[tid] = local_min_time_sec;
+        shared_time_ns[tid] = local_min_time_ns;
+    }
+    __syncthreads();
+    
+    // Step 3: Tree reduction
+    for (int s = blockDim.x / 2; s > 0; s >>= 1) {
+        if (tid < s) {
+            int other = tid + s;
+            
+            // Bounds check for safety (handles non-power-of-2 block sizes)
+            if (other < blockDim.x) {
+                // Determine if other thread has better order
+                bool other_is_better = false;
+                if (shared_price[other] > shared_price[tid]) {
+                    other_is_better = true;
+                } else if (shared_price[other] == shared_price[tid]) {
+                    if (shared_time_sec[other] < shared_time_sec[tid]) {
+                        other_is_better = true;
+                    } else if (shared_time_sec[other] == shared_time_sec[tid] &&
+                              shared_time_ns[other] < shared_time_ns[tid]) {
+                        other_is_better = true;
+                    }
+                }
+                
+                if (other_is_better) {
+                    shared_idx[tid] = shared_idx[other];
+                    shared_price[tid] = shared_price[other];
+                    shared_time_sec[tid] = shared_time_sec[other];
+                    shared_time_ns[tid] = shared_time_ns[other];
+                }
+            }
+        }
+        __syncthreads();
+    }
+    
+    // Step 4: Thread 0 has final result
+    return shared_idx[0];
+}
+
+// ============================================================================
 // TEAM 2: MATCHING ENGINE - ORDER MATCHING
 // ============================================================================
 
@@ -301,8 +492,8 @@ __device__ void match_against_asks_device(
     
     // Keep matching while we have quantity and valid asks
     while (qtm_remaining > 0) {
-        // Get best ask
-        int top_ask_idx = get_top_ask_order_idx(asks, n_orders);
+        // Get best ask using parallel reduction (all threads participate)
+        int top_ask_idx = get_top_ask_order_idx_parallel(asks, n_orders);
         
         // Check if we can match
         if (top_ask_idx == -1) break;  // No asks available
@@ -346,8 +537,8 @@ __device__ void match_against_bids_device(
     
     // Keep matching while we have quantity and valid bids
     while (qtm_remaining > 0) {
-        // Get best bid
-        int top_bid_idx = get_top_bid_order_idx(bids, n_orders);
+        // Get best bid using parallel reduction (all threads participate)
+        int top_bid_idx = get_top_bid_order_idx_parallel(bids, n_orders);
         
         // Check if we can match
         if (top_bid_idx == -1) break;  // No bids available
