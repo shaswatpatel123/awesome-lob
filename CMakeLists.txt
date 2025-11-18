@@ -8,17 +8,21 @@ set(CMAKE_CUDA_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
 # Compiler flags
-set(CMAKE_CUDA_FLAGS "${CMAKE_CUDA_FLAGS} -O3")
+# -O3: Maximum optimization
+# --use_fast_math: Faster math operations (good for A100)
+# -Xptxas -v: Show register usage and occupancy info
+set(CMAKE_CUDA_FLAGS "${CMAKE_CUDA_FLAGS} -O3 --use_fast_math")
 set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -O3 -Wall")
 
 # CUDA architectures - modify based on your GPU
 # Common architectures:
-# - Ampere (RTX 30xx, A100): 86
+# - Ampere (A100): 80
+# - Ampere (RTX 30xx, A6000): 86
 # - Turing (RTX 20xx): 75
 # - Volta (V100): 70
 # - Pascal (GTX 10xx, P100): 60, 61
 # - Maxwell (GTX TITAN X): 52
-set(CMAKE_CUDA_ARCHITECTURES 52)
+set(CMAKE_CUDA_ARCHITECTURES 80)
 
 # Include directories
 include_directories(${CMAKE_SOURCE_DIR}/include)

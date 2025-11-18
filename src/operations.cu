@@ -51,31 +51,34 @@ __device__ void add_order_device(
     const Message& msg,
     int n_orders
 ) {
-    // Find first empty slot (price == -1)
-    int empty_idx = -1;
-    for (int i = 0; i < n_orders; i++) {
-        if (orderside[i].price == EMPTY_PRICE) {
-            empty_idx = i;
-            break;
+    // Only the "Manager" thread should perform this state-modifying action.
+    if (threadIdx.x == 0) {
+        // Find first empty slot (price == -1)
+        int empty_idx = -1;
+        for (int i = 0; i < n_orders; i++) {
+            if (orderside[i].price == EMPTY_PRICE) {
+                empty_idx = i;
+                break;
+            }
         }
+        
+        if (empty_idx == -1) {
+            // Orderbook full - cannot add
+            // In production, might want to handle this differently
+            return;
+        }
+        
+        // Add the order
+        orderside[empty_idx].price = msg.price;
+        orderside[empty_idx].quantity = max(0, msg.quantity);
+        orderside[empty_idx].order_id = msg.order_id;
+        orderside[empty_idx].trader_id = msg.trader_id;
+        orderside[empty_idx].time_sec = msg.time_sec;
+        orderside[empty_idx].time_ns = msg.time_ns;
+        
+        // Clean up any orders with zero/negative quantity
+        remove_zero_neg_quant_device(orderside, n_orders);
     }
-    
-    if (empty_idx == -1) {
-        // Orderbook full - cannot add
-        // In production, might want to handle this differently
-        return;
-    }
-    
-    // Add the order
-    orderside[empty_idx].price = msg.price;
-    orderside[empty_idx].quantity = max(0, msg.quantity);
-    orderside[empty_idx].order_id = msg.order_id;
-    orderside[empty_idx].trader_id = msg.trader_id;
-    orderside[empty_idx].time_sec = msg.time_sec;
-    orderside[empty_idx].time_ns = msg.time_ns;
-    
-    // Clean up any orders with zero/negative quantity
-    remove_zero_neg_quant_device(orderside, n_orders);
 }
 
 /**
@@ -90,317 +93,191 @@ __device__ void cancel_order_device(
     const Message& msg,
     int n_orders
 ) {
-    // First try to find by order_id
-    int idx = -1;
-    for (int i = 0; i < n_orders; i++) {
-        if (orderside[i].order_id == msg.order_id) {
-            idx = i;
-            break;
-        }
-    }
-    
-    // If not found and this might be an INITID order, search by price
-    if (idx == -1) {
+    // Only the "Manager" thread should perform this state-modifying action.
+    if (threadIdx.x == 0) {
+        // First try to find by order_id
+        int idx = -1;
         for (int i = 0; i < n_orders; i++) {
-            if (orderside[i].price == msg.price && 
-                orderside[i].order_id <= INITID) {
+            if (orderside[i].order_id == msg.order_id) {
                 idx = i;
                 break;
             }
         }
-    }
-    
-    if (idx == -1) {
-        // Order not found
-        return;
-    }
-    
-    // Reduce quantity
-    orderside[idx].quantity -= msg.quantity;
-    
-    // Clean up orders with zero/negative quantity
-    remove_zero_neg_quant_device(orderside, n_orders);
-}
-
-// ============================================================================
-// TEAM 2: MATCHING ENGINE - PRIORITY SELECTION
-// ============================================================================
-
-/**
- * Get index of top ask order (best ask with price-time priority)
- * Maps to JAX __get_top_ask_order_idx (JaxOrderBookArrays.py:98-106)
- * 
- * Priority: Lowest price, then earliest time (sec, then ns)
- */
-__device__ int get_top_ask_order_idx(const Order* asks, int n_orders) {
-    int best_idx = -1;
-    int32_t min_price = MAX_INT;
-    int32_t min_time_sec = MAX_INT;
-    int32_t min_time_ns = MAX_INT;
-    
-    for (int i = 0; i < n_orders; i++) {
-        // Skip empty orders
-        if (asks[i].price == EMPTY_PRICE) continue;
         
-        // Convert -1 prices to MAX_INT for comparison
-        int32_t price = (asks[i].price == EMPTY_PRICE) ? MAX_INT : asks[i].price;
-        
-        // Check if this is a better price
-        bool is_better = false;
-        if (price < min_price) {
-            is_better = true;
-        } else if (price == min_price) {
-            // Same price - check time priority
-            if (asks[i].time_sec < min_time_sec) {
-                is_better = true;
-            } else if (asks[i].time_sec == min_time_sec && 
-                       asks[i].time_ns < min_time_ns) {
-                is_better = true;
+        // If not found and this might be an INITID order, search by price
+        if (idx == -1) {
+            for (int i = 0; i < n_orders; i++) {
+                if (orderside[i].price == msg.price && 
+                    orderside[i].order_id <= INITID) {
+                    idx = i;
+                    break;
+                }
             }
         }
         
-        if (is_better) {
-            best_idx = i;
-            min_price = price;
-            min_time_sec = asks[i].time_sec;
-            min_time_ns = asks[i].time_ns;
-        }
-    }
-    
-    return best_idx;
-}
-
-/**
- * Get index of top bid order (best bid with price-time priority)
- * Maps to JAX __get_top_bid_order_idx (JaxOrderBookArrays.py:89-95)
- * 
- * Priority: Highest price, then earliest time (sec, then ns)
- */
-__device__ int get_top_bid_order_idx(const Order* bids, int n_orders) {
-    int best_idx = -1;
-    int32_t max_price = -1;
-    int32_t min_time_sec = MAX_INT;
-    int32_t min_time_ns = MAX_INT;
-    
-    for (int i = 0; i < n_orders; i++) {
-        // Skip empty orders
-        if (bids[i].price == EMPTY_PRICE) continue;
-        
-        // Check if this is a better price
-        bool is_better = false;
-        if (bids[i].price > max_price) {
-            is_better = true;
-        } else if (bids[i].price == max_price) {
-            // Same price - check time priority
-            if (bids[i].time_sec < min_time_sec) {
-                is_better = true;
-            } else if (bids[i].time_sec == min_time_sec && 
-                       bids[i].time_ns < min_time_ns) {
-                is_better = true;
-            }
+        if (idx == -1) {
+            // Order not found
+            return;
         }
         
-        if (is_better) {
-            best_idx = i;
-            max_price = bids[i].price;
-            min_time_sec = bids[i].time_sec;
-            min_time_ns = bids[i].time_ns;
-        }
+        // Reduce quantity
+        orderside[idx].quantity -= msg.quantity;
+        
+        // Clean up orders with zero/negative quantity
+        remove_zero_neg_quant_device(orderside, n_orders);
     }
-    
-    return best_idx;
 }
 
 // ============================================================================
-// PARALLEL VERSIONS - Using all threads in block for reduction
+// TEAM 2: MATCHING ENGINE - PRIORITY SELECTION (PARALLEL)
 // ============================================================================
 
 /**
- * Parallel get top ask order - Uses all threads for reduction
- * Much faster than sequential version when blockDim.x > 1
- * 
- * Complexity: O(n_orders / blockDim.x + log(blockDim.x))
- * Example: 1000 orders, 256 threads = O(4 + 8) = O(12) vs O(1000) sequential
+ * Helper struct for parallel reduction to find best order
  */
-__device__ int get_top_ask_order_idx_parallel(const Order* asks, int n_orders) {
-    int tid = threadIdx.x;
-    int stride = blockDim.x;
+struct BestOrderInfo {
+    int32_t price;
+    int32_t time_sec;
+    int32_t time_ns;
+    int index;
+};
+
+/**
+ * Finds the best ask order (lowest price, earliest time) using an intra-block
+ * parallel reduction. The entire block (the "Team") collaborates on this search.
+ */
+__device__ int find_best_ask_parallel(const Order* asks, int n_orders) {
+    // Shared memory for the reduction
+    extern __shared__ BestOrderInfo shared_best[];
     
-    // Step 1: Each thread finds best in its subset
-    int local_best_idx = -1;
-    int32_t local_min_price = MAX_INT;
-    int32_t local_min_time_sec = MAX_INT;
-    int32_t local_min_time_ns = MAX_INT;
-    
-    // Strided loop: thread 0 checks 0,256,512..., thread 1 checks 1,257,513...
-    for (int i = tid; i < n_orders; i += stride) {
-        if (asks[i].price == EMPTY_PRICE) continue;
-        
-        int32_t price = asks[i].price;
-        
-        // Check if this order is better (lower price, then earlier time)
-        bool is_better = false;
-        if (price < local_min_price) {
-            is_better = true;
-        } else if (price == local_min_price) {
-            if (asks[i].time_sec < local_min_time_sec) {
+    // Each thread finds the best order in its own subset of the data
+    BestOrderInfo local_best;
+    local_best.price = MAX_INT;
+    local_best.time_sec = MAX_INT;
+    local_best.time_ns = MAX_INT;
+    local_best.index = -1;
+
+    for (int i = threadIdx.x; i < n_orders; i += blockDim.x) {
+        if (asks[i].price != EMPTY_PRICE) {
+            bool is_better = false;
+            if (asks[i].price < local_best.price) {
                 is_better = true;
-            } else if (asks[i].time_sec == local_min_time_sec && 
-                       asks[i].time_ns < local_min_time_ns) {
-                is_better = true;
+            } else if (asks[i].price == local_best.price) {
+                if (asks[i].time_sec < local_best.time_sec) {
+                    is_better = true;
+                } else if (asks[i].time_sec == local_best.time_sec && asks[i].time_ns < local_best.time_ns) {
+                    is_better = true;
+                }
+            }
+            if (is_better) {
+                local_best.price = asks[i].price;
+                local_best.time_sec = asks[i].time_sec;
+                local_best.time_ns = asks[i].time_ns;
+                local_best.index = i;
             }
         }
-        
-        if (is_better) {
-            local_best_idx = i;
-            local_min_price = price;
-            local_min_time_sec = asks[i].time_sec;
-            local_min_time_ns = asks[i].time_ns;
-        }
     }
-    
-    // Step 2: Store results in shared memory
-    // Use dynamic size based on blockDim.x (supports 32 to 1024 threads)
-    __shared__ int shared_idx[1024];
-    __shared__ int32_t shared_price[1024];
-    __shared__ int32_t shared_time_sec[1024];
-    __shared__ int32_t shared_time_ns[1024];
-    
-    if (tid < blockDim.x) {
-        shared_idx[tid] = local_best_idx;
-        shared_price[tid] = local_min_price;
-        shared_time_sec[tid] = local_min_time_sec;
-        shared_time_ns[tid] = local_min_time_ns;
-    }
+
+    // Copy local result to shared memory
+    shared_best[threadIdx.x] = local_best;
     __syncthreads();
-    
-    // Step 3: Tree reduction - combine results
-    for (int s = blockDim.x / 2; s > 0; s >>= 1) {
-        if (tid < s) {
-            int other = tid + s;
-            
-            // Bounds check for safety (handles non-power-of-2 block sizes)
-            if (other < blockDim.x) {
-                // Determine if other thread has better order
-                bool other_is_better = false;
-                if (shared_price[other] < shared_price[tid]) {
-                    other_is_better = true;
-                } else if (shared_price[other] == shared_price[tid]) {
-                    if (shared_time_sec[other] < shared_time_sec[tid]) {
-                        other_is_better = true;
-                    } else if (shared_time_sec[other] == shared_time_sec[tid] &&
-                              shared_time_ns[other] < shared_time_ns[tid]) {
-                        other_is_better = true;
-                    }
+
+    // Perform the reduction in shared memory
+    for (unsigned int s = blockDim.x / 2; s > 0; s >>= 1) {
+        if (threadIdx.x < s) {
+            BestOrderInfo other = shared_best[threadIdx.x + s];
+            bool is_other_better = false;
+            if (other.price < shared_best[threadIdx.x].price) {
+                is_other_better = true;
+            } else if (other.price == shared_best[threadIdx.x].price) {
+                if (other.time_sec < shared_best[threadIdx.x].time_sec) {
+                    is_other_better = true;
+                } else if (other.time_sec == shared_best[threadIdx.x].time_sec && other.time_ns < shared_best[threadIdx.x].time_ns) {
+                    is_other_better = true;
                 }
-                
-                if (other_is_better) {
-                    shared_idx[tid] = shared_idx[other];
-                    shared_price[tid] = shared_price[other];
-                    shared_time_sec[tid] = shared_time_sec[other];
-                    shared_time_ns[tid] = shared_time_ns[other];
-                }
+            }
+            if (is_other_better) {
+                shared_best[threadIdx.x] = other;
             }
         }
         __syncthreads();
     }
-    
-    // Step 4: Thread 0 has final result
-    return shared_idx[0];
+
+    // The best order index is now in shared_best[0].index
+    if (threadIdx.x == 0) {
+        return shared_best[0].index;
+    }
+    return -1; // Only thread 0 should return the result
 }
 
 /**
- * Parallel get top bid order - Uses all threads for reduction
- * Much faster than sequential version when blockDim.x > 1
- * 
- * Complexity: O(n_orders / blockDim.x + log(blockDim.x))
+ * Finds the best bid order (highest price, earliest time) using an intra-block
+ * parallel reduction.
  */
-__device__ int get_top_bid_order_idx_parallel(const Order* bids, int n_orders) {
-    int tid = threadIdx.x;
-    int stride = blockDim.x;
-    
-    // Step 1: Each thread finds best in its subset
-    int local_best_idx = -1;
-    int32_t local_max_price = -1;
-    int32_t local_min_time_sec = MAX_INT;
-    int32_t local_min_time_ns = MAX_INT;
-    
-    // Strided loop
-    for (int i = tid; i < n_orders; i += stride) {
-        if (bids[i].price == EMPTY_PRICE) continue;
-        
-        int32_t price = bids[i].price;
-        
-        // Check if this order is better (higher price, then earlier time)
-        bool is_better = false;
-        if (price > local_max_price) {
-            is_better = true;
-        } else if (price == local_max_price) {
-            if (bids[i].time_sec < local_min_time_sec) {
+__device__ int find_best_bid_parallel(const Order* bids, int n_orders) {
+    // Shared memory for the reduction
+    extern __shared__ BestOrderInfo shared_best[];
+
+    // Each thread finds the best order in its own subset of the data
+    BestOrderInfo local_best;
+    local_best.price = -1;
+    local_best.time_sec = MAX_INT;
+    local_best.time_ns = MAX_INT;
+    local_best.index = -1;
+
+    for (int i = threadIdx.x; i < n_orders; i += blockDim.x) {
+        if (bids[i].price != EMPTY_PRICE) {
+            bool is_better = false;
+            if (bids[i].price > local_best.price) {
                 is_better = true;
-            } else if (bids[i].time_sec == local_min_time_sec && 
-                       bids[i].time_ns < local_min_time_ns) {
-                is_better = true;
+            } else if (bids[i].price == local_best.price) {
+                if (bids[i].time_sec < local_best.time_sec) {
+                    is_better = true;
+                } else if (bids[i].time_sec == local_best.time_sec && bids[i].time_ns < local_best.time_ns) {
+                    is_better = true;
+                }
+            }
+            if (is_better) {
+                local_best.price = bids[i].price;
+                local_best.time_sec = bids[i].time_sec;
+                local_best.time_ns = bids[i].time_ns;
+                local_best.index = i;
             }
         }
-        
-        if (is_better) {
-            local_best_idx = i;
-            local_max_price = price;
-            local_min_time_sec = bids[i].time_sec;
-            local_min_time_ns = bids[i].time_ns;
-        }
     }
-    
-    // Step 2: Store results in shared memory
-    // Use dynamic size based on blockDim.x (supports 32 to 1024 threads)
-    __shared__ int shared_idx[1024];
-    __shared__ int32_t shared_price[1024];
-    __shared__ int32_t shared_time_sec[1024];
-    __shared__ int32_t shared_time_ns[1024];
-    
-    if (tid < blockDim.x) {
-        shared_idx[tid] = local_best_idx;
-        shared_price[tid] = local_max_price;
-        shared_time_sec[tid] = local_min_time_sec;
-        shared_time_ns[tid] = local_min_time_ns;
-    }
+
+    // Copy local result to shared memory
+    shared_best[threadIdx.x] = local_best;
     __syncthreads();
-    
-    // Step 3: Tree reduction
-    for (int s = blockDim.x / 2; s > 0; s >>= 1) {
-        if (tid < s) {
-            int other = tid + s;
-            
-            // Bounds check for safety (handles non-power-of-2 block sizes)
-            if (other < blockDim.x) {
-                // Determine if other thread has better order
-                bool other_is_better = false;
-                if (shared_price[other] > shared_price[tid]) {
-                    other_is_better = true;
-                } else if (shared_price[other] == shared_price[tid]) {
-                    if (shared_time_sec[other] < shared_time_sec[tid]) {
-                        other_is_better = true;
-                    } else if (shared_time_sec[other] == shared_time_sec[tid] &&
-                              shared_time_ns[other] < shared_time_ns[tid]) {
-                        other_is_better = true;
-                    }
+
+    // Perform the reduction in shared memory
+    for (unsigned int s = blockDim.x / 2; s > 0; s >>= 1) {
+        if (threadIdx.x < s) {
+            BestOrderInfo other = shared_best[threadIdx.x + s];
+            bool is_other_better = false;
+            if (other.price > shared_best[threadIdx.x].price) {
+                is_other_better = true;
+            } else if (other.price == shared_best[threadIdx.x].price) {
+                if (other.time_sec < shared_best[threadIdx.x].time_sec) {
+                    is_other_better = true;
+                } else if (other.time_sec == shared_best[threadIdx.x].time_sec && other.time_ns < shared_best[threadIdx.x].time_ns) {
+                    is_other_better = true;
                 }
-                
-                if (other_is_better) {
-                    shared_idx[tid] = shared_idx[other];
-                    shared_price[tid] = shared_price[other];
-                    shared_time_sec[tid] = shared_time_sec[other];
-                    shared_time_ns[tid] = shared_time_ns[other];
-                }
+            }
+            if (is_other_better) {
+                shared_best[threadIdx.x] = other;
             }
         }
         __syncthreads();
     }
-    
-    // Step 4: Thread 0 has final result
-    return shared_idx[0];
+
+    // The best order index is now in shared_best[0].index
+    if (threadIdx.x == 0) {
+        return shared_best[0].index;
+    }
+    return -1; // Only thread 0 should return the result
 }
+
 
 // ============================================================================
 // TEAM 2: MATCHING ENGINE - ORDER MATCHING
@@ -487,31 +364,51 @@ __device__ void match_against_asks_device(
     int n_orders,
     int n_trades
 ) {
+    __shared__ int32_t shared_qtm_remaining;
+    __shared__ int shared_top_idx;
+    __shared__ int shared_can_continue;
+
     int32_t qtm_remaining = msg.quantity;
     int32_t limit_price = msg.price;
-    
-    // Keep matching while we have quantity and valid asks
-    while (qtm_remaining > 0) {
-        // Get best ask using parallel reduction (all threads participate)
-        int top_ask_idx = get_top_ask_order_idx_parallel(asks, n_orders);
+
+    if (threadIdx.x == 0) {
+        shared_qtm_remaining = qtm_remaining;
+    }
+    __syncthreads();
+
+    while (true) {
+        int current_remaining = shared_qtm_remaining;
+        if (current_remaining <= 0) break;
+
+        // TEAM OPERATION: All threads collaborate to find the best ask
+        int top_ask_idx = find_best_ask_parallel(asks, n_orders);
+        if (threadIdx.x == 0) {
+            shared_top_idx = top_ask_idx;
+        }
+        __syncthreads();
+        top_ask_idx = shared_top_idx;
+
+        // MANAGER OPERATION: Thread 0 checks if the match can proceed
+        if (threadIdx.x == 0) {
+            bool can_continue = !(top_ask_idx == -1 ||
+                                  asks[top_ask_idx].price == EMPTY_PRICE ||
+                                  asks[top_ask_idx].price > limit_price);
+            shared_can_continue = can_continue ? 1 : 0;
+        }
+        __syncthreads();
+        if (!shared_can_continue) break;
         
-        // Check if we can match
-        if (top_ask_idx == -1) break;  // No asks available
-        if (asks[top_ask_idx].price == EMPTY_PRICE) break;  // No valid ask
-        if (asks[top_ask_idx].price > limit_price) break;  // Price too high
-        
-        // Match against this ask
-        match_single_order_device(
-            top_ask_idx,
-            asks,
-            qtm_remaining,
-            trades,
-            n_trades,
-            msg.order_id,
-            msg.time_sec,
-            msg.time_ns,
-            n_orders
-        );
+        // MANAGER OPERATION: Thread 0 performs the actual match and state update
+        if (threadIdx.x == 0) {
+            match_single_order_device(
+                top_ask_idx, asks, qtm_remaining, trades, n_trades,
+                msg.order_id, msg.time_sec, msg.time_ns, n_orders
+            );
+            shared_qtm_remaining = qtm_remaining;
+        }
+
+        // All threads must wait for the state update to be visible
+        __syncthreads();
     }
 }
 
@@ -532,31 +429,51 @@ __device__ void match_against_bids_device(
     int n_orders,
     int n_trades
 ) {
+    __shared__ int32_t shared_qtm_remaining;
+    __shared__ int shared_top_idx;
+    __shared__ int shared_can_continue;
+
     int32_t qtm_remaining = msg.quantity;
     int32_t limit_price = msg.price;
-    
-    // Keep matching while we have quantity and valid bids
-    while (qtm_remaining > 0) {
-        // Get best bid using parallel reduction (all threads participate)
-        int top_bid_idx = get_top_bid_order_idx_parallel(bids, n_orders);
+
+    if (threadIdx.x == 0) {
+        shared_qtm_remaining = qtm_remaining;
+    }
+    __syncthreads();
+
+    while (true) {
+        int current_remaining = shared_qtm_remaining;
+        if (current_remaining <= 0) break;
+
+        // TEAM OPERATION: All threads collaborate to find the best bid
+        int top_bid_idx = find_best_bid_parallel(bids, n_orders);
+        if (threadIdx.x == 0) {
+            shared_top_idx = top_bid_idx;
+        }
+        __syncthreads();
+        top_bid_idx = shared_top_idx;
+
+        // MANAGER OPERATION: Thread 0 checks if the match can proceed
+        if (threadIdx.x == 0) {
+            bool can_continue = !(top_bid_idx == -1 ||
+                                  bids[top_bid_idx].price == EMPTY_PRICE ||
+                                  bids[top_bid_idx].price < limit_price);
+            shared_can_continue = can_continue ? 1 : 0;
+        }
+        __syncthreads();
+        if (!shared_can_continue) break;
         
-        // Check if we can match
-        if (top_bid_idx == -1) break;  // No bids available
-        if (bids[top_bid_idx].price == EMPTY_PRICE) break;  // No valid bid
-        if (bids[top_bid_idx].price < limit_price) break;  // Price too low
-        
-        // Match against this bid
-        match_single_order_device(
-            top_bid_idx,
-            bids,
-            qtm_remaining,
-            trades,
-            n_trades,
-            msg.order_id,
-            msg.time_sec,
-            msg.time_ns,
-            n_orders
-        );
+        // MANAGER OPERATION: Thread 0 performs the actual match and state update
+        if (threadIdx.x == 0) {
+            match_single_order_device(
+                top_bid_idx, bids, qtm_remaining, trades, n_trades,
+                msg.order_id, msg.time_sec, msg.time_ns, n_orders
+            );
+            shared_qtm_remaining = qtm_remaining;
+        }
+
+        // All threads must wait for the state update to be visible
+        __syncthreads();
     }
 }
 
@@ -583,63 +500,87 @@ __device__ void process_message_device(
     // Side: -1=ask, 1=bid
     
     if (msg.type == Message::CANCEL || msg.type == Message::DELETE) {
-        // Cancel order
-        if (msg.side == Message::ASK) {
-            cancel_order_device(asks, msg, n_orders);
-        } else if (msg.side == Message::BID) {
-            cancel_order_device(bids, msg, n_orders);
+        // Cancel order - only thread 0 modifies state
+        if (threadIdx.x == 0) {
+            if (msg.side == Message::ASK) {
+                cancel_order_device(asks, msg, n_orders);
+            } else if (msg.side == Message::BID) {
+                cancel_order_device(bids, msg, n_orders);
+            }
         }
+        // All threads must sync to ensure state changes are visible before next message
+        __syncthreads();
     }
     else if (msg.type == Message::LIMIT) {
-        // Limit order - need to track remaining quantity after matching
+        // Limit order - ALL threads participate in matching, only thread 0 adds remainder
         if (msg.side == Message::ASK) {
             // Sell limit: match against bids, then add remainder
             
-            // Count initial bid volume at or above our price
-            int32_t matchable_qty = 0;
-            for (int i = 0; i < n_orders; i++) {
-                if (bids[i].price != EMPTY_PRICE && bids[i].price >= msg.price) {
-                    matchable_qty += bids[i].quantity;
+            // Thread 0 counts initial bid volume at or above our price
+            __shared__ int32_t shared_matchable_qty;
+            if (threadIdx.x == 0) {
+                int32_t matchable_qty = 0;
+                for (int i = 0; i < n_orders; i++) {
+                    if (bids[i].price != EMPTY_PRICE && bids[i].price >= msg.price) {
+                        matchable_qty += bids[i].quantity;
+                    }
                 }
+                shared_matchable_qty = matchable_qty;
             }
+            __syncthreads();
             
-            // Match against bids
+            // ALL THREADS participate in matching
             match_against_bids_device(asks, bids, trades, msg, n_orders, n_trades);
             
-            // Calculate remaining quantity (what wasn't matched)
-            int32_t remaining = msg.quantity - matchable_qty;
-            if (remaining < 0) remaining = 0;
-            
-            // Only add if there's remaining quantity
-            if (remaining > 0) {
-                Message remaining_msg = msg;
-                remaining_msg.quantity = remaining;
-                add_order_device(asks, remaining_msg, n_orders);
+            // Only thread 0 adds remainder
+            if (threadIdx.x == 0) {
+                // Calculate remaining quantity (what wasn't matched)
+                int32_t remaining = msg.quantity - shared_matchable_qty;
+                if (remaining < 0) remaining = 0;
+                
+                // Only add if there's remaining quantity
+                if (remaining > 0) {
+                    Message remaining_msg = msg;
+                    remaining_msg.quantity = remaining;
+                    add_order_device(asks, remaining_msg, n_orders);
+                }
             }
+            // All threads sync to ensure add_order completes before next message
+            __syncthreads();
         } else if (msg.side == Message::BID) {
             // Buy limit: match against asks, then add remainder
             
-            // Count initial ask volume at or below our price
-            int32_t matchable_qty = 0;
-            for (int i = 0; i < n_orders; i++) {
-                if (asks[i].price != EMPTY_PRICE && asks[i].price <= msg.price) {
-                    matchable_qty += asks[i].quantity;
+            // Thread 0 counts initial ask volume at or below our price
+            __shared__ int32_t shared_matchable_qty;
+            if (threadIdx.x == 0) {
+                int32_t matchable_qty = 0;
+                for (int i = 0; i < n_orders; i++) {
+                    if (asks[i].price != EMPTY_PRICE && asks[i].price <= msg.price) {
+                        matchable_qty += asks[i].quantity;
+                    }
                 }
+                shared_matchable_qty = matchable_qty;
             }
+            __syncthreads();
             
-            // Match against asks
+            // ALL THREADS participate in matching
             match_against_asks_device(asks, bids, trades, msg, n_orders, n_trades);
             
-            // Calculate remaining quantity (what wasn't matched)
-            int32_t remaining = msg.quantity - matchable_qty;
-            if (remaining < 0) remaining = 0;
-            
-            // Only add if there's remaining quantity
-            if (remaining > 0) {
-                Message remaining_msg = msg;
-                remaining_msg.quantity = remaining;
-                add_order_device(bids, remaining_msg, n_orders);
+            // Only thread 0 adds remainder
+            if (threadIdx.x == 0) {
+                // Calculate remaining quantity (what wasn't matched)
+                int32_t remaining = msg.quantity - shared_matchable_qty;
+                if (remaining < 0) remaining = 0;
+                
+                // Only add if there's remaining quantity
+                if (remaining > 0) {
+                    Message remaining_msg = msg;
+                    remaining_msg.quantity = remaining;
+                    add_order_device(bids, remaining_msg, n_orders);
+                }
             }
+            // All threads sync to ensure add_order completes before next message
+            __syncthreads();
         }
     }
     else if (msg.type == Message::MARKET) {

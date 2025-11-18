@@ -2,16 +2,17 @@
 
 # Compiler settings
 NVCC = nvcc
-NVCC_FLAGS = -std=c++14 -O3 -I../include --compiler-options -Wall -rdc=true
+NVCC_FLAGS = -std=c++14 -O3 -I../include --compiler-options -Wall -rdc=true --use_fast_math -Wno-deprecated-gpu-targets
 
 # GPU Architecture (adjust for your GPU)
 # Common options:
+#   A100: sm_80
 #   Tesla V100: sm_70
 #   RTX 2080/2080 Ti: sm_75
 #   RTX 3080/3090: sm_86
 #   RTX 4080/4090: sm_89
 #   GTX TITAN X: sm_52
-GPU_ARCH = sm_52
+GPU_ARCH = sm_80
 
 # Source files
 CPU_SOURCES = ../src/orderbook_cpu.cpp

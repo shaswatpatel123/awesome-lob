@@ -17,6 +17,13 @@ using namespace cuda_orderbook;
 using namespace std::chrono;
 
 // ============================================================================
+// CONFIGURATION
+// ============================================================================
+
+// Default block size (can be overridden via command line)
+const int DEFAULT_BLOCK_SIZE = 256;
+
+// ============================================================================
 // MESSAGE GENERATION
 // ============================================================================
 
@@ -94,7 +101,8 @@ double benchmark_gpu(
     int num_messages_per_book,
     int n_orders_per_book,
     int n_trades_per_book,
-    const std::vector<Message>& messages
+    const std::vector<Message>& messages,
+    int block_size = DEFAULT_BLOCK_SIZE
 ) {
     std::cout << "\n=== GPU Benchmark ===" << std::endl;
     std::cout << "Allocating GPU memory..." << std::endl;
@@ -126,9 +134,16 @@ double benchmark_gpu(
     std::cout << "Copying messages to GPU..." << std::endl;
     CHECK_CUDA_ERROR(cudaMemcpy(d_messages, messages.data(), messages_size, cudaMemcpyHostToDevice));
     
+    // Calculate shared memory size for parallel reduction
+    // BestOrderInfo = 3 * int32_t + 1 * int = 4 * 4 bytes = 16 bytes
+    size_t shared_mem_size = block_size * (sizeof(int32_t) * 3 + sizeof(int));
+    
+    std::cout << "Using block size: " << block_size << " threads" << std::endl;
+    std::cout << "Shared memory per block: " << shared_mem_size << " bytes" << std::endl;
+    
     // Warm-up run
     std::cout << "Warm-up run..." << std::endl;
-    process_messages_sequential_kernel<<<num_books, 256>>>(
+    process_messages_sequential_kernel<<<num_books, block_size, shared_mem_size>>>(
         gpu_batch,
         d_messages,
         num_messages_per_book,
@@ -145,7 +160,7 @@ double benchmark_gpu(
     
     cudaEventRecord(start);
     
-    process_messages_sequential_kernel<<<num_books, 256>>>(
+    process_messages_sequential_kernel<<<num_books, block_size, shared_mem_size>>>(
         gpu_batch,
         d_messages,
         num_messages_per_book,
@@ -180,17 +195,43 @@ double benchmark_gpu(
 int main(int argc, char** argv) {
     std::cout << "=== CPU vs GPU Orderbook Benchmark ===" << std::endl;
     
+    // Show usage if help requested
+    if (argc > 1 && (std::string(argv[1]) == "-h" || std::string(argv[1]) == "--help")) {
+        std::cout << "\nUsage: " << argv[0] << " [num_books] [messages] [orders] [trades] [block_size]" << std::endl;
+        std::cout << "\nParameters:" << std::endl;
+        std::cout << "  num_books   : Number of orderbooks to process in parallel (default: 100)" << std::endl;
+        std::cout << "  messages    : Messages per orderbook (default: 1000)" << std::endl;
+        std::cout << "  orders      : Max orders per side (default: 100)" << std::endl;
+        std::cout << "  trades      : Max trades (default: 100)" << std::endl;
+        std::cout << "  block_size  : GPU threads per block (default: 256, valid: 32/64/128/256/512/1024)" << std::endl;
+        std::cout << "\nExamples:" << std::endl;
+        std::cout << "  " << argv[0] << "                    # Use all defaults" << std::endl;
+        std::cout << "  " << argv[0] << " 1000 10000         # 1000 books, 10k messages each" << std::endl;
+        std::cout << "  " << argv[0] << " 100 1000 100 100 512  # Custom block size (512 threads)" << std::endl;
+        return 0;
+    }
+    
     // Benchmark parameters
     int num_books = (argc > 1) ? std::atoi(argv[1]) : 100;
     int num_messages_per_book = (argc > 2) ? std::atoi(argv[2]) : 1000;
     int n_orders_per_book = (argc > 3) ? std::atoi(argv[3]) : 100;
     int n_trades_per_book = (argc > 4) ? std::atoi(argv[4]) : 100;
+    int block_size = (argc > 5) ? std::atoi(argv[5]) : DEFAULT_BLOCK_SIZE;
+    
+    // Validate block size
+    if (block_size != 32 && block_size != 64 && block_size != 128 && 
+        block_size != 256 && block_size != 512 && block_size != 1024) {
+        std::cerr << "Error: Invalid block size " << block_size << std::endl;
+        std::cerr << "Valid values: 32, 64, 128, 256, 512, 1024" << std::endl;
+        return 1;
+    }
     
     std::cout << "\nConfiguration:" << std::endl;
     std::cout << "  Number of orderbooks: " << num_books << std::endl;
     std::cout << "  Messages per orderbook: " << num_messages_per_book << std::endl;
     std::cout << "  Orders per side: " << n_orders_per_book << std::endl;
     std::cout << "  Max trades: " << n_trades_per_book << std::endl;
+    std::cout << "  GPU block size: " << block_size << " threads" << std::endl;
     std::cout << "  Total messages: " << num_books * num_messages_per_book << std::endl;
     
     // Generate test messages
@@ -212,7 +253,8 @@ int main(int argc, char** argv) {
         num_messages_per_book,
         n_orders_per_book,
         n_trades_per_book,
-        messages
+        messages,
+        block_size
     );
     
     // Print comparison
