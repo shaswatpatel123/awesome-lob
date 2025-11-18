@@ -133,7 +133,9 @@ bool unit_test_add_order(TestStats& stats) {
     CUDA_CHECK(cudaMalloc(&d_msg, sizeof(Message)));
     CUDA_CHECK(cudaMemcpy(d_msg, &msg, sizeof(Message), cudaMemcpyHostToDevice));
     
-    process_messages_sequential_kernel<<<1, 256>>>(gpu_batch, d_msg, 1, 1);
+    // Allocate shared memory for parallel reduction (256 threads * struct size)
+    size_t shared_mem_size = 256 * (sizeof(int32_t) * 3 + sizeof(int)); // BestOrderInfo
+    process_messages_sequential_kernel<<<1, 256, shared_mem_size>>>(gpu_batch, d_msg, 1, 1);
     CUDA_CHECK(cudaDeviceSynchronize());
     
     // Copy GPU results
@@ -209,7 +211,9 @@ bool unit_test_cancel_order(TestStats& stats) {
     CUDA_CHECK(cudaMemcpy(d_msgs, messages.data(), messages.size() * sizeof(Message), 
                          cudaMemcpyHostToDevice));
     
-    process_messages_sequential_kernel<<<1, 256>>>(gpu_batch, d_msgs, messages.size(), 1);
+    // Allocate shared memory for parallel reduction
+    size_t shared_mem_size = 256 * (sizeof(int32_t) * 3 + sizeof(int)); // BestOrderInfo
+    process_messages_sequential_kernel<<<1, 256, shared_mem_size>>>(gpu_batch, d_msgs, messages.size(), 1);
     CUDA_CHECK(cudaDeviceSynchronize());
     
     // Copy and compare
@@ -281,7 +285,9 @@ bool unit_test_simple_match(TestStats& stats) {
     CUDA_CHECK(cudaMemcpy(d_msgs, messages.data(), messages.size() * sizeof(Message),
                          cudaMemcpyHostToDevice));
     
-    process_messages_sequential_kernel<<<1, 256>>>(gpu_batch, d_msgs, messages.size(), 1);
+    // Allocate shared memory for parallel reduction
+    size_t shared_mem_size = 256 * (sizeof(int32_t) * 3 + sizeof(int)); // BestOrderInfo
+    process_messages_sequential_kernel<<<1, 256, shared_mem_size>>>(gpu_batch, d_msgs, messages.size(), 1);
     CUDA_CHECK(cudaDeviceSynchronize());
     
     // Copy and compare
@@ -365,7 +371,9 @@ bool integration_test_scenario(TestStats& stats, const char* name,
     CUDA_CHECK(cudaMemcpy(d_msgs, messages.data(), messages.size() * sizeof(Message),
                          cudaMemcpyHostToDevice));
     
-    process_messages_sequential_kernel<<<1, 256>>>(gpu_batch, d_msgs, messages.size(), 1);
+    // Allocate shared memory for parallel reduction
+    size_t shared_mem_size = 256 * (sizeof(int32_t) * 3 + sizeof(int)); // BestOrderInfo
+    process_messages_sequential_kernel<<<1, 256, shared_mem_size>>>(gpu_batch, d_msgs, messages.size(), 1);
     CUDA_CHECK(cudaDeviceSynchronize());
     
     // Copy and compare
@@ -464,7 +472,9 @@ bool functional_test_random(TestStats& stats, int num_messages, const char* size
     auto gpu_start = std::chrono::high_resolution_clock::now();
     dim3 grid_proc(num_books);
     dim3 block_proc(256);
-    process_messages_sequential_kernel<<<grid_proc, block_proc>>>(gpu_batch, d_msgs, num_messages, num_books);
+    // Allocate shared memory for parallel reduction (256 threads * BestOrderInfo)
+    size_t shared_mem_size = 256 * (sizeof(int32_t) * 3 + sizeof(int)); // BestOrderInfo
+    process_messages_sequential_kernel<<<grid_proc, block_proc, shared_mem_size>>>(gpu_batch, d_msgs, num_messages, num_books);
     CUDA_CHECK(cudaDeviceSynchronize());
     auto gpu_end = std::chrono::high_resolution_clock::now();
     auto gpu_time = std::chrono::duration_cast<std::chrono::microseconds>(gpu_end - gpu_start).count();
