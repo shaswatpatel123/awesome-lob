@@ -2,8 +2,8 @@
 
 # Compiler settings
 NVCC = nvcc
-NVCC_FLAGS = -std=c++14 -O2 -I../include --compiler-options -Wall -rdc=true
-GPU_ARCH = sm_52
+NVCC_FLAGS = -std=c++14 -O3 -I../include --compiler-options -Wall -rdc=true --use_fast_math -Wno-deprecated-gpu-targets
+GPU_ARCH = sm_80
 
 # Source files
 CPU_SOURCES = ../src/orderbook_cpu.cpp data_generator.cpp
