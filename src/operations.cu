@@ -79,6 +79,80 @@ __device__ void add_order_device(
 }
 
 /**
+ * Add order in parallel - thread-safe version for parallel execution
+ * Each thread can safely add a different order simultaneously
+ * 
+ * Uses atomicCAS (Compare-And-Swap) to atomically claim empty slots
+ * Multiple threads searching for empty slots will claim different slots
+ * 
+ * @param orderside Ask or bid orders array
+ * @param msg Order message (contains price, quantity, order_id, etc.)
+ * @param n_orders Number of orders in the array
+ */
+__device__ void add_order_parallel_device(
+    Order* orderside,
+    const Message& msg,
+    int n_orders
+) {
+    // Search for an empty slot and try to claim it atomically
+    // Multiple threads may be searching simultaneously
+    for (int i = 0; i < n_orders; i++) {
+        // Try to atomically claim this slot if it's empty
+        // atomicCAS: Compare-And-Swap
+        //   - If orderside[i].price == EMPTY_PRICE, set it to msg.price
+        //   - Returns the old value (before the swap)
+        //   - Only ONE thread succeeds if multiple threads try the same slot
+        int old_price = atomicCAS(&orderside[i].price, EMPTY_PRICE, msg.price);
+        
+        if (old_price == EMPTY_PRICE) {
+            // SUCCESS! We claimed this slot
+            // Now fill in the rest of the order details
+            
+            // Note: We don't need atomics for these fields because:
+            // 1. We already exclusively own this slot (we claimed it)
+            // 2. No other thread will touch this slot (price != EMPTY_PRICE now)
+            orderside[i].quantity = max(0, msg.quantity);
+            orderside[i].order_id = msg.order_id;
+            orderside[i].trader_id = msg.trader_id;
+            orderside[i].time_sec = msg.time_sec;
+            orderside[i].time_ns = msg.time_ns;
+            
+            // Successfully added - exit
+            return;
+        }
+        
+        // If atomicCAS failed, another thread claimed this slot
+        // Continue searching for the next empty slot
+    }
+    
+    // If we get here, orderbook is full
+    // In production, might want to:
+    // - Use atomicAdd to increment a "dropped orders" counter
+    // - Log an error
+    // - Expand the orderbook dynamically
+    // For now, silently fail (order is dropped)
+}
+
+/**
+ * Add order in parallel - wrapper that handles side selection
+ * Convenience function for kernel to call
+ * 
+ * @param asks Ask orders array
+ * @param bids Bid orders array
+ * @param msg Order message (contains side: ASK or BID)
+ * @param n_orders Number of orders per side
+ */
+__device__ void add_order_parallel_with_side_device(
+    Order* asks,
+    Order* bids,
+    const Message& msg,
+    int n_orders
+) {
+    Order* target_side = (msg.side == Message::ASK) ? asks : bids;
+    add_order_parallel_device(target_side, msg, n_orders);
+}
+
+/**
  * Cancel order from orderside
  * Maps to JAX cancel_order (JaxOrderBookArrays.py:52-65)
  * 
@@ -122,8 +196,171 @@ __device__ void cancel_order_device(
     remove_zero_neg_quant_device(orderside, n_orders);
 }
 
+/**
+ * Cancel order in parallel - thread-safe version for parallel execution
+ * Each thread can safely cancel a different order simultaneously
+ * 
+ * Uses atomic operations to ensure thread safety when reducing quantities
+ * 
+ * @param asks Ask orders array
+ * @param bids Bid orders array
+ * @param msg Cancel message (contains order_id, quantity, side)
+ * @param n_orders Number of orders per side
+ */
+__device__ void cancel_order_parallel_device(
+    Order* asks,
+    Order* bids,
+    const Message& msg,
+    int n_orders
+) {
+    // Determine which side to search
+    Order* target_side = (msg.side == Message::ASK) ? asks : bids;
+    
+    // First try to find by order_id
+    int idx = -1;
+    for (int i = 0; i < n_orders; i++) {
+        if (target_side[i].order_id == msg.order_id) {
+            idx = i;
+            break;
+        }
+    }
+    
+    // If not found and this might be an INITID order, search by price
+    if (idx == -1) {
+        for (int i = 0; i < n_orders; i++) {
+            if (target_side[i].price == msg.price && 
+                target_side[i].order_id <= INITID) {
+                idx = i;
+                break;
+            }
+        }
+    }
+    
+    if (idx == -1) {
+        // Order not found - silently return (might have been already canceled)
+        return;
+    }
+    
+    // Atomically reduce quantity to handle potential race conditions
+    // (Though in practice, each thread should be canceling a different order_id)
+    int old_qty = atomicSub(&target_side[idx].quantity, msg.quantity);
+    int new_qty = old_qty - msg.quantity;
+    
+    // If fully canceled or over-canceled, mark as empty
+    if (new_qty <= 0) {
+        // Mark the order as empty
+        target_side[idx].price = EMPTY_PRICE;
+        target_side[idx].quantity = 0;
+        target_side[idx].order_id = 0;
+        target_side[idx].trader_id = 0;
+        target_side[idx].time_sec = 0;
+        target_side[idx].time_ns = 0;
+    }
+    
+    // Note: We don't call remove_zero_neg_quant_device here because:
+    // 1. We already handle the zero-quantity case above
+    // 2. Calling it would require synchronization across all threads
+    // 3. The atomicSub + manual cleanup is sufficient for parallel execution
+}
+
 // ============================================================================
 // TEAM 2: MATCHING ENGINE - PRIORITY SELECTION
+// ============================================================================
+
+/**
+ * Match all pending orders in the orderbook
+ * Called after all ADDs and CANCELs are complete
+ * 
+ * Continuously matches best bid against best ask until no more matches possible
+ * Must run sequentially to preserve price-time priority and handle dependencies
+ * 
+ * @param asks Ask orders array
+ * @param bids Bid orders array
+ * @param trades Trade records array
+ * @param n_orders Number of orders per side
+ * @param n_trades Maximum number of trades to record
+ */
+__device__ void match_all_pending_device(
+    Order* asks,
+    Order* bids,
+    Trade* trades,
+    int n_orders,
+    int n_trades
+) {
+    // Keep matching until no more matches are possible
+    bool can_match = true;
+    int trade_count = 0;
+    
+    while (can_match && trade_count < n_trades) {
+        can_match = false;
+        
+        // Get best ask and best bid
+        int best_ask_idx = get_top_ask_order_idx(asks, n_orders);
+        int best_bid_idx = get_top_bid_order_idx(bids, n_orders);
+        
+        // Check if both sides have orders
+        if (best_ask_idx == -1 || best_bid_idx == -1) {
+            break;  // One side is empty
+        }
+        
+        Order& ask = asks[best_ask_idx];
+        Order& bid = bids[best_bid_idx];
+        
+        // Check if orders are valid
+        if (ask.price == EMPTY_PRICE || bid.price == EMPTY_PRICE) {
+            break;  // Invalid orders
+        }
+        
+        // Check if prices cross (bid >= ask)
+        if (bid.price >= ask.price) {
+            // MATCH!
+            int match_qty = min(ask.quantity, bid.quantity);
+            
+            // Find empty trade slot and record the trade
+            for (int i = 0; i < n_trades; i++) {
+                if (trades[i].price == EMPTY_PRICE) {
+                    trades[i].price = ask.price;  // Trade at passive (ask) price
+                    trades[i].quantity = match_qty;
+                    trades[i].passive_order_id = ask.order_id;
+                    trades[i].aggressive_order_id = bid.order_id;
+                    trades[i].time_sec = bid.time_sec;  // Use aggressive order time
+                    trades[i].time_ns = bid.time_ns;
+                    trade_count++;
+                    break;
+                }
+            }
+            
+            // Update order quantities
+            ask.quantity -= match_qty;
+            bid.quantity -= match_qty;
+            
+            // Remove fully filled orders
+            if (ask.quantity <= 0) {
+                ask.price = EMPTY_PRICE;
+                ask.quantity = 0;
+                ask.order_id = 0;
+                ask.trader_id = 0;
+                ask.time_sec = 0;
+                ask.time_ns = 0;
+            }
+            
+            if (bid.quantity <= 0) {
+                bid.price = EMPTY_PRICE;
+                bid.quantity = 0;
+                bid.order_id = 0;
+                bid.trader_id = 0;
+                bid.time_sec = 0;
+                bid.time_ns = 0;
+            }
+            
+            // We matched, so try again
+            can_match = true;
+        }
+    }
+}
+
+// ============================================================================
+// TEAM 2: MATCHING ENGINE - PRIORITY SELECTION (CONTINUED)
 // ============================================================================
 
 /**
