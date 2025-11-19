@@ -11,6 +11,7 @@
 #include "types.h"
 #include "kernels.cuh"
 #include "orderbook_cpu.h"
+#include "utils.cuh"
 #include "data_generator.h"
 #include <iostream>
 #include <iomanip>
@@ -97,6 +98,19 @@ bool compare_trades(const Trade* trades1, const Trade* trades2, int n_trades) {
     return true;
 }
 
+bool setup_gpu_batch(OrderbookBatch& batch, int n_orders, int n_trades) {
+    if (!allocate_orderbook_batch(batch, 1, n_orders, n_trades)) {
+        std::cerr << "Failed to allocate GPU orderbook batch" << std::endl;
+        return false;
+    }
+    init_orderbooks_device(batch);
+    return true;
+}
+
+void teardown_gpu_batch(OrderbookBatch& batch) {
+    free_orderbook_batch(batch);
+}
+
 // ============================================================================
 // LEVEL 1: UNIT TESTS - Individual Operations
 // ============================================================================
@@ -109,22 +123,17 @@ bool unit_test_add_order(TestStats& stats) {
     cpu_book.allocate(100, 50);
     
     OrderbookBatch gpu_batch;
-    gpu_batch.num_books = 1;
-    gpu_batch.n_orders_per_book = 100;
-    gpu_batch.n_trades_per_book = 50;
-    CUDA_CHECK(cudaMalloc(&gpu_batch.d_asks, 100 * sizeof(Order)));
-    CUDA_CHECK(cudaMalloc(&gpu_batch.d_bids, 100 * sizeof(Order)));
-    CUDA_CHECK(cudaMalloc(&gpu_batch.d_trades, 50 * sizeof(Trade)));
-    
-    init_orderbooks_kernel<<<1, 256>>>(gpu_batch, 1);
-    CUDA_CHECK(cudaDeviceSynchronize());
+    if (!setup_gpu_batch(gpu_batch, 100, 50)) {
+        cpu_book.cleanup();
+        stats.record_fail();
+        return false;
+    }
     
     // Create single add message
     Message msg = create_message(Message::LIMIT, Message::BID, 100, 99000, 2001);
     
     // Process on CPU
-    process_message_cpu(cpu_book.asks, cpu_book.bids, cpu_book.trades, 
-                       msg, cpu_book.n_orders_per_side, cpu_book.n_trades);
+    process_message_cpu(cpu_book, msg);
     
     // Process on GPU
     Message* d_msg;
@@ -158,10 +167,8 @@ bool unit_test_add_order(TestStats& stats) {
     
     // Cleanup
     delete[] gpu_bids;
-    cudaFree(gpu_batch.d_asks);
-    cudaFree(gpu_batch.d_bids);
-    cudaFree(gpu_batch.d_trades);
     cudaFree(d_msg);
+    teardown_gpu_batch(gpu_batch);
     cpu_book.cleanup();
     
     if (match && order_found) {
@@ -183,15 +190,11 @@ bool unit_test_cancel_order(TestStats& stats) {
     cpu_book.allocate(100, 50);
     
     OrderbookBatch gpu_batch;
-    gpu_batch.num_books = 1;
-    gpu_batch.n_orders_per_book = 100;
-    gpu_batch.n_trades_per_book = 50;
-    CUDA_CHECK(cudaMalloc(&gpu_batch.d_asks, 100 * sizeof(Order)));
-    CUDA_CHECK(cudaMalloc(&gpu_batch.d_bids, 100 * sizeof(Order)));
-    CUDA_CHECK(cudaMalloc(&gpu_batch.d_trades, 50 * sizeof(Trade)));
-    
-    init_orderbooks_kernel<<<1, 256>>>(gpu_batch, 1);
-    CUDA_CHECK(cudaDeviceSynchronize());
+    if (!setup_gpu_batch(gpu_batch, 100, 50)) {
+        cpu_book.cleanup();
+        stats.record_fail();
+        return false;
+    }
     
     // Add then cancel
     std::vector<Message> messages;
@@ -200,8 +203,7 @@ bool unit_test_cancel_order(TestStats& stats) {
     
     // Process on CPU
     for (const auto& msg : messages) {
-        process_message_cpu(cpu_book.asks, cpu_book.bids, cpu_book.trades,
-                           msg, cpu_book.n_orders_per_side, cpu_book.n_trades);
+        process_message_cpu(cpu_book, msg);
     }
     
     // Process on GPU
@@ -233,10 +235,8 @@ bool unit_test_cancel_order(TestStats& stats) {
     
     // Cleanup
     delete[] gpu_bids;
-    cudaFree(gpu_batch.d_asks);
-    cudaFree(gpu_batch.d_bids);
-    cudaFree(gpu_batch.d_trades);
     cudaFree(d_msgs);
+    teardown_gpu_batch(gpu_batch);
     cpu_book.cleanup();
     
     if (match && correct_qty) {
@@ -258,15 +258,11 @@ bool unit_test_simple_match(TestStats& stats) {
     cpu_book.allocate(100, 50);
     
     OrderbookBatch gpu_batch;
-    gpu_batch.num_books = 1;
-    gpu_batch.n_orders_per_book = 100;
-    gpu_batch.n_trades_per_book = 50;
-    CUDA_CHECK(cudaMalloc(&gpu_batch.d_asks, 100 * sizeof(Order)));
-    CUDA_CHECK(cudaMalloc(&gpu_batch.d_bids, 100 * sizeof(Order)));
-    CUDA_CHECK(cudaMalloc(&gpu_batch.d_trades, 50 * sizeof(Trade)));
-    
-    init_orderbooks_kernel<<<1, 256>>>(gpu_batch, 1);
-    CUDA_CHECK(cudaDeviceSynchronize());
+    if (!setup_gpu_batch(gpu_batch, 100, 50)) {
+        cpu_book.cleanup();
+        stats.record_fail();
+        return false;
+    }
     
     // Perfect match scenario
     auto messages = generate_perfect_match();
@@ -274,8 +270,7 @@ bool unit_test_simple_match(TestStats& stats) {
     
     // Process on CPU
     for (const auto& msg : messages) {
-        process_message_cpu(cpu_book.asks, cpu_book.bids, cpu_book.trades,
-                           msg, cpu_book.n_orders_per_side, cpu_book.n_trades);
+        process_message_cpu(cpu_book, msg);
     }
     
     // Process on GPU
@@ -314,10 +309,8 @@ bool unit_test_simple_match(TestStats& stats) {
     delete[] gpu_asks;
     delete[] gpu_bids;
     delete[] gpu_trades;
-    cudaFree(gpu_batch.d_asks);
-    cudaFree(gpu_batch.d_bids);
-    cudaFree(gpu_batch.d_trades);
     cudaFree(d_msgs);
+    teardown_gpu_batch(gpu_batch);
     cpu_book.cleanup();
     
     if (match && trade_found && book_empty) {
@@ -344,15 +337,11 @@ bool integration_test_scenario(TestStats& stats, const char* name,
     cpu_book.allocate(100, 50);
     
     OrderbookBatch gpu_batch;
-    gpu_batch.num_books = 1;
-    gpu_batch.n_orders_per_book = 100;
-    gpu_batch.n_trades_per_book = 50;
-    CUDA_CHECK(cudaMalloc(&gpu_batch.d_asks, 100 * sizeof(Order)));
-    CUDA_CHECK(cudaMalloc(&gpu_batch.d_bids, 100 * sizeof(Order)));
-    CUDA_CHECK(cudaMalloc(&gpu_batch.d_trades, 50 * sizeof(Trade)));
-    
-    init_orderbooks_kernel<<<1, 256>>>(gpu_batch, 1);
-    CUDA_CHECK(cudaDeviceSynchronize());
+    if (!setup_gpu_batch(gpu_batch, 100, 50)) {
+        cpu_book.cleanup();
+        stats.record_fail();
+        return false;
+    }
     
     // Generate scenario
     auto messages = generator();
@@ -360,8 +349,7 @@ bool integration_test_scenario(TestStats& stats, const char* name,
     
     // Process on CPU
     for (const auto& msg : messages) {
-        process_message_cpu(cpu_book.asks, cpu_book.bids, cpu_book.trades,
-                           msg, cpu_book.n_orders_per_side, cpu_book.n_trades);
+        process_message_cpu(cpu_book, msg);
     }
     
     // Process on GPU
@@ -392,10 +380,8 @@ bool integration_test_scenario(TestStats& stats, const char* name,
     delete[] gpu_asks;
     delete[] gpu_bids;
     delete[] gpu_trades;
-    cudaFree(gpu_batch.d_asks);
-    cudaFree(gpu_batch.d_bids);
-    cudaFree(gpu_batch.d_trades);
     cudaFree(d_msgs);
+    teardown_gpu_batch(gpu_batch);
     cpu_book.cleanup();
     
     if (match) {
@@ -429,15 +415,11 @@ bool functional_test_random(TestStats& stats, int num_messages, const char* size
     cpu_book.allocate(n_orders, n_trades);
     
     OrderbookBatch gpu_batch;
-    gpu_batch.num_books = 1;
-    gpu_batch.n_orders_per_book = n_orders;
-    gpu_batch.n_trades_per_book = n_trades;
-    CUDA_CHECK(cudaMalloc(&gpu_batch.d_asks, n_orders * sizeof(Order)));
-    CUDA_CHECK(cudaMalloc(&gpu_batch.d_bids, n_orders * sizeof(Order)));
-    CUDA_CHECK(cudaMalloc(&gpu_batch.d_trades, n_trades * sizeof(Trade)));
-    
-    init_orderbooks_kernel<<<1, 256>>>(gpu_batch, 1);
-    CUDA_CHECK(cudaDeviceSynchronize());
+    if (!setup_gpu_batch(gpu_batch, n_orders, n_trades)) {
+        cpu_book.cleanup();
+        stats.record_fail();
+        return false;
+    }
     
     // Generate random data
     auto messages = generate_random_messages(num_messages);
@@ -445,8 +427,7 @@ bool functional_test_random(TestStats& stats, int num_messages, const char* size
     // Process on CPU
     auto cpu_start = std::chrono::high_resolution_clock::now();
     for (const auto& msg : messages) {
-        process_message_cpu(cpu_book.asks, cpu_book.bids, cpu_book.trades,
-                           msg, cpu_book.n_orders_per_side, cpu_book.n_trades);
+        process_message_cpu(cpu_book, msg);
     }
     auto cpu_end = std::chrono::high_resolution_clock::now();
     auto cpu_time = std::chrono::duration_cast<std::chrono::microseconds>(cpu_end - cpu_start).count();
@@ -466,17 +447,17 @@ bool functional_test_random(TestStats& stats, int num_messages, const char* size
     auto gpu_time = std::chrono::duration_cast<std::chrono::microseconds>(gpu_end - gpu_start).count();
     
     // Copy and compare
-    Order* gpu_asks = new Order[200];
-    Order* gpu_bids = new Order[200];
-    Trade* gpu_trades = new Trade[100];
+    Order* gpu_asks = new Order[n_orders];
+    Order* gpu_bids = new Order[n_orders];
+    Trade* gpu_trades = new Trade[n_trades];
     
-    CUDA_CHECK(cudaMemcpy(gpu_asks, gpu_batch.d_asks, 200 * sizeof(Order), cudaMemcpyDeviceToHost));
-    CUDA_CHECK(cudaMemcpy(gpu_bids, gpu_batch.d_bids, 200 * sizeof(Order), cudaMemcpyDeviceToHost));
-    CUDA_CHECK(cudaMemcpy(gpu_trades, gpu_batch.d_trades, 100 * sizeof(Trade), cudaMemcpyDeviceToHost));
+    CUDA_CHECK(cudaMemcpy(gpu_asks, gpu_batch.d_asks, n_orders * sizeof(Order), cudaMemcpyDeviceToHost));
+    CUDA_CHECK(cudaMemcpy(gpu_bids, gpu_batch.d_bids, n_orders * sizeof(Order), cudaMemcpyDeviceToHost));
+    CUDA_CHECK(cudaMemcpy(gpu_trades, gpu_batch.d_trades, n_trades * sizeof(Trade), cudaMemcpyDeviceToHost));
     
-    bool match = compare_orders(cpu_book.asks, gpu_asks, 200, "Asks") &&
-                 compare_orders(cpu_book.bids, gpu_bids, 200, "Bids") &&
-                 compare_trades(cpu_book.trades, gpu_trades, 100);
+    bool match = compare_orders(cpu_book.asks, gpu_asks, n_orders, "Asks") &&
+                 compare_orders(cpu_book.bids, gpu_bids, n_orders, "Bids") &&
+                 compare_trades(cpu_book.trades, gpu_trades, n_trades);
     
     std::cout << "  CPU time: " << cpu_time << " μs" << std::endl;
     std::cout << "  GPU time: " << gpu_time << " μs" << std::endl;
@@ -485,10 +466,8 @@ bool functional_test_random(TestStats& stats, int num_messages, const char* size
     delete[] gpu_asks;
     delete[] gpu_bids;
     delete[] gpu_trades;
-    cudaFree(gpu_batch.d_asks);
-    cudaFree(gpu_batch.d_bids);
-    cudaFree(gpu_batch.d_trades);
     cudaFree(d_msgs);
+    teardown_gpu_batch(gpu_batch);
     cpu_book.cleanup();
     
     if (match) {
