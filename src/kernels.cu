@@ -45,8 +45,23 @@ __global__ void init_orderbooks_kernel(
     Order* bids = batch.get_bids(book_idx);
     Trade* trades = batch.get_trades(book_idx);
     
+    // Get price-aware structures
+    OrderMetadata* ask_metadata = batch.get_ask_metadata(book_idx);
+    OrderMetadata* bid_metadata = batch.get_bid_metadata(book_idx);
+    PriceBucket* ask_buckets = batch.get_ask_buckets(book_idx);
+    PriceBucket* bid_buckets = batch.get_bid_buckets(book_idx);
+    PriceMapEntry* ask_price_map = batch.get_ask_price_map(book_idx);
+    PriceMapEntry* bid_price_map = batch.get_bid_price_map(book_idx);
+    OrderIDMapEntry* ask_order_id_map = batch.get_ask_order_id_map(book_idx);
+    OrderIDMapEntry* bid_order_id_map = batch.get_bid_order_id_map(book_idx);
+    BestPriceTracker* ask_tracker = batch.get_ask_tracker(book_idx);
+    BestPriceTracker* bid_tracker = batch.get_bid_tracker(book_idx);
+    
     int n_orders = batch.n_orders_per_book;
     int n_trades = batch.n_trades_per_book;
+    int n_buckets = batch.n_price_buckets_per_book;
+    int price_map_size = batch.price_map_size;
+    int order_id_map_size = batch.order_id_map_size;
     
     // Parallelize initialization across threads
     // Each thread initializes multiple orders/trades
@@ -64,6 +79,13 @@ __global__ void init_orderbooks_kernel(
         bids[i].trader_id = 0;
         bids[i].time_sec = 0;
         bids[i].time_ns = 0;
+        
+        if (ask_metadata) {
+            ask_metadata[i] = OrderMetadata();
+        }
+        if (bid_metadata) {
+            bid_metadata[i] = OrderMetadata();
+        }
     }
     
     for (int i = threadIdx.x; i < n_trades; i += blockDim.x) {
@@ -73,6 +95,46 @@ __global__ void init_orderbooks_kernel(
         trades[i].aggressive_order_id = 0;
         trades[i].time_sec = 0;
         trades[i].time_ns = 0;
+    }
+    
+    // Initialize price buckets
+    for (int i = threadIdx.x; i < n_buckets; i += blockDim.x) {
+        if (ask_buckets) {
+            ask_buckets[i] = PriceBucket();
+        }
+        if (bid_buckets) {
+            bid_buckets[i] = PriceBucket();
+        }
+    }
+    
+    // Initialize price maps
+    for (int i = threadIdx.x; i < price_map_size; i += blockDim.x) {
+        if (ask_price_map) {
+            ask_price_map[i] = PriceMapEntry();
+        }
+        if (bid_price_map) {
+            bid_price_map[i] = PriceMapEntry();
+        }
+    }
+    
+    // Initialize order-ID maps
+    for (int i = threadIdx.x; i < order_id_map_size; i += blockDim.x) {
+        if (ask_order_id_map) {
+            ask_order_id_map[i] = OrderIDMapEntry();
+        }
+        if (bid_order_id_map) {
+            bid_order_id_map[i] = OrderIDMapEntry();
+        }
+    }
+    
+    // Initialize best price trackers (only thread 0)
+    if (threadIdx.x == 0) {
+        if (ask_tracker) {
+            *ask_tracker = BestPriceTracker();
+        }
+        if (bid_tracker) {
+            *bid_tracker = BestPriceTracker();
+        }
     }
 }
 
@@ -89,17 +151,16 @@ __global__ void add_order_batch_kernel(
     int book_idx = blockIdx.x;
     if (book_idx >= num_books) return;
     
-    // Get this orderbook's data
-    Order* asks = batch.get_asks(book_idx);
-    Order* bids = batch.get_bids(book_idx);
+    // Get this orderbook's state
+    OrderbookState state = batch.get_state(book_idx);
     const Message& msg = messages[book_idx];
     
     // Only thread 0 processes (add_order is sequential within orderbook)
     if (threadIdx.x == 0) {
         if (msg.side == Message::ASK) {
-            add_order_device(asks, msg, batch.n_orders_per_book);
+            add_order_device(state, true, msg);  // is_ask_side = true
         } else if (msg.side == Message::BID) {
-            add_order_device(bids, msg, batch.n_orders_per_book);
+            add_order_device(state, false, msg);  // is_ask_side = false
         }
     }
 }
@@ -117,17 +178,16 @@ __global__ void cancel_order_batch_kernel(
     int book_idx = blockIdx.x;
     if (book_idx >= num_books) return;
     
-    // Get this orderbook's data
-    Order* asks = batch.get_asks(book_idx);
-    Order* bids = batch.get_bids(book_idx);
+    // Get this orderbook's state
+    OrderbookState state = batch.get_state(book_idx);
     const Message& msg = messages[book_idx];
     
     // Only thread 0 processes
     if (threadIdx.x == 0) {
         if (msg.side == Message::ASK) {
-            cancel_order_device(asks, msg, batch.n_orders_per_book);
+            cancel_order_device(state, true, msg);  // is_ask_side = true
         } else if (msg.side == Message::BID) {
-            cancel_order_device(bids, msg, batch.n_orders_per_book);
+            cancel_order_device(state, false, msg);  // is_ask_side = false
         }
     }
 }
@@ -149,10 +209,8 @@ __global__ void match_order_batch_kernel(
     int book_idx = blockIdx.x;
     if (book_idx >= num_books) return;
     
-    // Get this orderbook's data
-    Order* asks = batch.get_asks(book_idx);
-    Order* bids = batch.get_bids(book_idx);
-    Trade* trades = batch.get_trades(book_idx);
+    // Get this orderbook's state
+    OrderbookState state = batch.get_state(book_idx);
     const Message& msg = messages[book_idx];
     
     // Only thread 0 processes (matching is sequential within orderbook)
@@ -160,14 +218,10 @@ __global__ void match_order_batch_kernel(
         // Match based on message side
         if (msg.side == Message::BID) {
             // Buy order: match against asks
-            match_against_asks_device(asks, bids, trades, msg, 
-                                     batch.n_orders_per_book, 
-                                     batch.n_trades_per_book);
+            match_against_asks_device(state, msg);
         } else if (msg.side == Message::ASK) {
             // Sell order: match against bids
-            match_against_bids_device(asks, bids, trades, msg,
-                                     batch.n_orders_per_book,
-                                     batch.n_trades_per_book);
+            match_against_bids_device(state, msg);
         }
     }
 }
@@ -195,10 +249,8 @@ __global__ void process_messages_sequential_kernel(
     
     int book_idx = thread_idx;
     
-    // Get this orderbook's arrays
-    Order* asks = batch.get_asks(book_idx);
-    Order* bids = batch.get_bids(book_idx);
-    Trade* trades = batch.get_trades(book_idx);
+    // Get this orderbook's state
+    OrderbookState state = batch.get_state(book_idx);
     
     // Get this orderbook's message array
     // Messages are laid out as: [book0_msgs, book1_msgs, ..., bookN_msgs]
@@ -212,14 +264,7 @@ __global__ void process_messages_sequential_kernel(
         if (msg.quantity <= 0 || msg.type == 0) continue;
         
         // Process this message
-        process_message_device(
-            asks, 
-            bids, 
-            trades, 
-            msg,
-            batch.n_orders_per_book,
-            batch.n_trades_per_book
-        );
+        process_message_device(state, msg);
     }
 }
 
@@ -228,9 +273,9 @@ __global__ void process_messages_sequential_kernel(
 // ============================================================================
 
 /**
- * Get best bid and ask for all orderbooks in batch
+ * Get best bid and ask for all orderbooks in batch (price-aware version)
  * Each thread block handles one orderbook
- * Uses parallel reduction to find min/max
+ * Uses O(1) best price tracker lookup
  */
 __global__ void get_best_bid_ask_kernel(
     const OrderbookBatch batch,
@@ -241,46 +286,22 @@ __global__ void get_best_bid_ask_kernel(
     int book_idx = blockIdx.x;
     if (book_idx >= num_books) return;
     
-    // Get this orderbook's arrays
-    const Order* asks = batch.get_asks(book_idx);
-    const Order* bids = batch.get_bids(book_idx);
-    int n_orders = batch.n_orders_per_book;
+    // Get this orderbook's state
+    OrderbookState state = batch.get_state(book_idx);
     
-    // Shared memory for reduction
-    __shared__ int32_t shared_min_ask;
-    __shared__ int32_t shared_max_bid;
-    
+    // Only thread 0 processes (best prices are already tracked)
     if (threadIdx.x == 0) {
-        shared_min_ask = MAX_INT;
-        shared_max_bid = -1;
-    }
-    __syncthreads();
-    
-    // Each thread processes multiple orders
-    int32_t local_min_ask = MAX_INT;
-    int32_t local_max_bid = -1;
-    
-    for (int i = threadIdx.x; i < n_orders; i += blockDim.x) {
-        // Check asks
-        if (asks[i].price != EMPTY_PRICE) {
-            local_min_ask = min(local_min_ask, asks[i].price);
+        if (state.ask_tracker && state.ask_tracker->has_best_ask()) {
+            best_asks[book_idx] = state.ask_tracker->best_ask_price;
+        } else {
+            best_asks[book_idx] = -1;
         }
         
-        // Check bids
-        if (bids[i].price != EMPTY_PRICE) {
-            local_max_bid = max(local_max_bid, bids[i].price);
+        if (state.bid_tracker && state.bid_tracker->has_best_bid()) {
+            best_bids[book_idx] = state.bid_tracker->best_bid_price;
+        } else {
+            best_bids[book_idx] = -1;
         }
-    }
-    
-    // Atomic updates to shared memory
-    atomicMin(&shared_min_ask, local_min_ask);
-    atomicMax(&shared_max_bid, local_max_bid);
-    __syncthreads();
-    
-    // Thread 0 writes results
-    if (threadIdx.x == 0) {
-        best_asks[book_idx] = (shared_min_ask == MAX_INT) ? -1 : shared_min_ask;
-        best_bids[book_idx] = shared_max_bid;
     }
 }
 

@@ -18,12 +18,55 @@ namespace cuda_orderbook {
 // ============================================================================
 
 /**
- * Remove orders with zero or negative quantity
+ * Remove orders with zero or negative quantity (price-aware version)
  * Maps to JAX __removeZeroNegQuant (JaxOrderBookArrays.py:40-41)
+ * 
+ * Note: In price-aware version, this is handled automatically during
+ * cancel/match operations. This function is kept for compatibility but
+ * is less efficient than direct operations.
  */
-__device__ void remove_zero_neg_quant_device(Order* orderside, int n_orders) {
-    for (int i = 0; i < n_orders; i++) {
+__device__ void remove_zero_neg_quant_device(const OrderbookState& state, bool is_ask_side) {
+    Order* orderside = is_ask_side ? state.asks : state.bids;
+    OrderMetadata* metadata = is_ask_side ? state.ask_metadata : state.bid_metadata;
+    PriceBucket* buckets = is_ask_side ? state.ask_buckets : state.bid_buckets;
+    PriceMapEntry* price_map = is_ask_side ? state.ask_price_map : state.bid_price_map;
+    OrderIDMapEntry* order_id_map = is_ask_side ? state.ask_order_id_map : state.bid_order_id_map;
+    BestPriceTracker* tracker = is_ask_side ? state.ask_tracker : state.bid_tracker;
+    
+    for (int i = 0; i < state.n_orders; i++) {
         if (orderside[i].quantity <= 0 && orderside[i].price != EMPTY_PRICE) {
+            int32_t bucket_idx = metadata[i].price_bucket_idx;
+            int32_t removed_qty = max(0, orderside[i].quantity);
+            
+            // Remove from price bucket
+            if (bucket_idx != EMPTY_INDEX) {
+                remove_order_from_bucket(buckets, metadata, orderside, bucket_idx, i, removed_qty);
+                
+                // If bucket is now empty, remove from price map
+                if (buckets[bucket_idx].is_empty()) {
+                    remove_price_bucket(price_map, orderside[i].price, state.price_map_size);
+                }
+                
+                // Update best price tracker if needed
+                bool need_update = false;
+                if (is_ask_side && bucket_idx == tracker->best_ask_bucket_idx) {
+                    need_update = true;
+                } else if (!is_ask_side && bucket_idx == tracker->best_bid_bucket_idx) {
+                    need_update = true;
+                }
+                
+                if (need_update) {
+                    if (is_ask_side) {
+                        update_best_ask_price(buckets, price_map, tracker, state.n_price_buckets, state.price_map_size);
+                    } else {
+                        update_best_bid_price(buckets, price_map, tracker, state.n_price_buckets, state.price_map_size);
+                    }
+                }
+            }
+            
+            // Remove from order-ID map
+            remove_order_id_map(order_id_map, orderside[i].order_id, state.order_id_map_size);
+            
             // Mark as empty
             orderside[i].price = EMPTY_PRICE;
             orderside[i].quantity = 0;
@@ -40,20 +83,30 @@ __device__ void remove_zero_neg_quant_device(Order* orderside, int n_orders) {
 // ============================================================================
 
 /**
- * Add order to orderside
+ * Add order to orderside (price-aware version)
  * Maps to JAX add_order (JaxOrderBookArrays.py:32-37)
  * 
- * Finds first empty slot and inserts the order
- * Cleans up any orders with <= 0 quantity
+ * Uses price-aware structures for O(1) price-level access
+ * Maintains linked lists per price level with FIFO ordering
  */
 __device__ void add_order_device(
-    Order* orderside,
-    const Message& msg,
-    int n_orders
+    const OrderbookState& state,
+    bool is_ask_side,
+    const Message& msg
 ) {
-    // Find first empty slot (price == -1)
+    if (msg.price == EMPTY_PRICE || msg.quantity <= 0) return;
+    
+    // Select appropriate side structures
+    Order* orderside = is_ask_side ? state.asks : state.bids;
+    OrderMetadata* metadata = is_ask_side ? state.ask_metadata : state.bid_metadata;
+    PriceBucket* buckets = is_ask_side ? state.ask_buckets : state.bid_buckets;
+    PriceMapEntry* price_map = is_ask_side ? state.ask_price_map : state.bid_price_map;
+    OrderIDMapEntry* order_id_map = is_ask_side ? state.ask_order_id_map : state.bid_order_id_map;
+    BestPriceTracker* tracker = is_ask_side ? state.ask_tracker : state.bid_tracker;
+    
+    // Find first empty slot
     int empty_idx = -1;
-    for (int i = 0; i < n_orders; i++) {
+    for (int i = 0; i < state.n_orders; i++) {
         if (orderside[i].price == EMPTY_PRICE) {
             empty_idx = i;
             break;
@@ -62,64 +115,149 @@ __device__ void add_order_device(
     
     if (empty_idx == -1) {
         // Orderbook full - cannot add
-        // In production, might want to handle this differently
         return;
     }
     
     // Add the order
-    orderside[empty_idx].price = msg.price;
-    orderside[empty_idx].quantity = max(0, msg.quantity);
-    orderside[empty_idx].order_id = msg.order_id;
-    orderside[empty_idx].trader_id = msg.trader_id;
-    orderside[empty_idx].time_sec = msg.time_sec;
-    orderside[empty_idx].time_ns = msg.time_ns;
+    Order& order = orderside[empty_idx];
+    order.price = msg.price;
+    order.quantity = max(0, msg.quantity);
+    order.order_id = msg.order_id;
+    order.trader_id = msg.trader_id;
+    order.time_sec = msg.time_sec;
+    order.time_ns = msg.time_ns;
     
-    // Clean up any orders with zero/negative quantity
-    remove_zero_neg_quant_device(orderside, n_orders);
+    // Get or create price bucket
+    int32_t bucket_idx = get_or_create_price_bucket(
+        buckets, price_map, msg.price, 
+        state.n_price_buckets, state.price_map_size
+    );
+    
+    if (bucket_idx == EMPTY_INDEX) {
+        // Cannot create bucket - revert order
+        order.price = EMPTY_PRICE;
+        return;
+    }
+    
+    // Add order to price bucket (at tail for FIFO)
+    add_order_to_bucket(buckets, metadata, orderside, bucket_idx, empty_idx);
+    
+    // Insert into order-ID map for O(1) cancel lookup
+    insert_order_id_map(order_id_map, msg.order_id, empty_idx, state.order_id_map_size);
+    
+    // Update best price tracker
+    if (is_ask_side) {
+        // For asks, update if this is a better (lower) price
+        if (msg.price < tracker->best_ask_price) {
+            tracker->best_ask_price = msg.price;
+            tracker->best_ask_bucket_idx = bucket_idx;
+        }
+    } else {
+        // For bids, update if this is a better (higher) price
+        if (msg.price > tracker->best_bid_price) {
+            tracker->best_bid_price = msg.price;
+            tracker->best_bid_bucket_idx = bucket_idx;
+        }
+    }
 }
 
 /**
- * Cancel order from orderside
+ * Cancel order from orderside (price-aware version)
  * Maps to JAX cancel_order (JaxOrderBookArrays.py:52-65)
  * 
- * Finds order by ID (or by price for INITID orders)
- * Reduces quantity, removes if <= 0
+ * Uses O(1) order-ID lookup via hash map
+ * Removes from price bucket if fully cancelled
  */
 __device__ void cancel_order_device(
-    Order* orderside,
-    const Message& msg,
-    int n_orders
+    const OrderbookState& state,
+    bool is_ask_side,
+    const Message& msg
 ) {
-    // First try to find by order_id
-    int idx = -1;
-    for (int i = 0; i < n_orders; i++) {
-        if (orderside[i].order_id == msg.order_id) {
-            idx = i;
-            break;
-        }
-    }
+    // Select appropriate side structures
+    Order* orderside = is_ask_side ? state.asks : state.bids;
+    OrderMetadata* metadata = is_ask_side ? state.ask_metadata : state.bid_metadata;
+    PriceBucket* buckets = is_ask_side ? state.ask_buckets : state.bid_buckets;
+    PriceMapEntry* price_map = is_ask_side ? state.ask_price_map : state.bid_price_map;
+    OrderIDMapEntry* order_id_map = is_ask_side ? state.ask_order_id_map : state.bid_order_id_map;
+    BestPriceTracker* tracker = is_ask_side ? state.ask_tracker : state.bid_tracker;
+    
+    // Find order by ID using hash map (O(1))
+    int32_t idx = find_order_by_id_map(order_id_map, msg.order_id, state.order_id_map_size);
     
     // If not found and this might be an INITID order, search by price
-    if (idx == -1) {
-        for (int i = 0; i < n_orders; i++) {
+    if (idx == EMPTY_INDEX) {
+        for (int i = 0; i < state.n_orders; i++) {
             if (orderside[i].price == msg.price && 
-                orderside[i].order_id <= INITID) {
+                orderside[i].order_id <= INITID &&
+                orderside[i].price != EMPTY_PRICE) {
                 idx = i;
                 break;
             }
         }
     }
     
-    if (idx == -1) {
+    if (idx == EMPTY_INDEX || idx >= state.n_orders) {
         // Order not found
         return;
     }
     
-    // Reduce quantity
-    orderside[idx].quantity -= msg.quantity;
+    Order& order = orderside[idx];
+    if (order.price == EMPTY_PRICE) return;
     
-    // Clean up orders with zero/negative quantity
-    remove_zero_neg_quant_device(orderside, n_orders);
+    int32_t old_quantity = order.quantity;
+    
+    // Reduce quantity
+    order.quantity = max(0, order.quantity - msg.quantity);
+    
+    // If fully cancelled, remove from structures
+    if (order.quantity <= 0) {
+        // Get bucket index from metadata
+        int32_t bucket_idx = metadata[idx].price_bucket_idx;
+        
+        // Remove from price bucket
+        if (bucket_idx != EMPTY_INDEX) {
+            remove_order_from_bucket(buckets, metadata, orderside, bucket_idx, idx, old_quantity);
+            
+            // If bucket is now empty, remove from price map
+            if (buckets[bucket_idx].is_empty()) {
+                remove_price_bucket(price_map, order.price, state.price_map_size);
+            }
+            
+            // Update best price tracker if we removed the best price
+            bool need_update = false;
+            if (is_ask_side && bucket_idx == tracker->best_ask_bucket_idx) {
+                need_update = true;
+            } else if (!is_ask_side && bucket_idx == tracker->best_bid_bucket_idx) {
+                need_update = true;
+            }
+            
+            if (need_update) {
+                if (is_ask_side) {
+                    update_best_ask_price(buckets, price_map, tracker, state.n_price_buckets, state.price_map_size);
+                } else {
+                    update_best_bid_price(buckets, price_map, tracker, state.n_price_buckets, state.price_map_size);
+                }
+            }
+        }
+        
+        // Remove from order-ID map
+        remove_order_id_map(order_id_map, msg.order_id, state.order_id_map_size);
+        
+        // Clear order
+        order.price = EMPTY_PRICE;
+        order.quantity = 0;
+        order.order_id = 0;
+        order.trader_id = 0;
+        order.time_sec = 0;
+        order.time_ns = 0;
+    } else {
+        // Partial cancel - update bucket quantity
+        int32_t bucket_idx = metadata[idx].price_bucket_idx;
+        if (bucket_idx != EMPTY_INDEX) {
+            int32_t qty_delta = old_quantity - order.quantity;
+            buckets[bucket_idx].total_quantity = max(0, buckets[bucket_idx].total_quantity - qty_delta);
+        }
+    }
 }
 
 // ============================================================================
@@ -127,88 +265,21 @@ __device__ void cancel_order_device(
 // ============================================================================
 
 /**
- * Get index of top ask order (best ask with price-time priority)
- * Maps to JAX __get_top_ask_order_idx (JaxOrderBookArrays.py:98-106)
- * 
- * Priority: Lowest price, then earliest time (sec, then ns)
+ * Get index of top ask order (price-aware version)
+ * Uses best price tracker for O(1) access
+ * Priority: Lowest price, then earliest time (FIFO within price level)
  */
-__device__ int get_top_ask_order_idx(const Order* asks, int n_orders) {
-    int best_idx = -1;
-    int32_t min_price = MAX_INT;
-    int32_t min_time_sec = MAX_INT;
-    int32_t min_time_ns = MAX_INT;
-    
-    for (int i = 0; i < n_orders; i++) {
-        // Skip empty orders
-        if (asks[i].price == EMPTY_PRICE) continue;
-        
-        // Convert -1 prices to MAX_INT for comparison
-        int32_t price = (asks[i].price == EMPTY_PRICE) ? MAX_INT : asks[i].price;
-        
-        // Check if this is a better price
-        bool is_better = false;
-        if (price < min_price) {
-            is_better = true;
-        } else if (price == min_price) {
-            // Same price - check time priority
-            if (asks[i].time_sec < min_time_sec) {
-                is_better = true;
-            } else if (asks[i].time_sec == min_time_sec && 
-                       asks[i].time_ns < min_time_ns) {
-                is_better = true;
-            }
-        }
-        
-        if (is_better) {
-            best_idx = i;
-            min_price = price;
-            min_time_sec = asks[i].time_sec;
-            min_time_ns = asks[i].time_ns;
-        }
-    }
-    
-    return best_idx;
+__device__ int get_top_ask_order_idx(const OrderbookState& state) {
+    return get_top_ask_order_idx_price_aware(state);
 }
 
 /**
- * Get index of top bid order (best bid with price-time priority)
- * Maps to JAX __get_top_bid_order_idx (JaxOrderBookArrays.py:89-95)
- * 
- * Priority: Highest price, then earliest time (sec, then ns)
+ * Get index of top bid order (price-aware version)
+ * Uses best price tracker for O(1) access
+ * Priority: Highest price, then earliest time (FIFO within price level)
  */
-__device__ int get_top_bid_order_idx(const Order* bids, int n_orders) {
-    int best_idx = -1;
-    int32_t max_price = -1;
-    int32_t min_time_sec = MAX_INT;
-    int32_t min_time_ns = MAX_INT;
-    
-    for (int i = 0; i < n_orders; i++) {
-        // Skip empty orders
-        if (bids[i].price == EMPTY_PRICE) continue;
-        
-        // Check if this is a better price
-        bool is_better = false;
-        if (bids[i].price > max_price) {
-            is_better = true;
-        } else if (bids[i].price == max_price) {
-            // Same price - check time priority
-            if (bids[i].time_sec < min_time_sec) {
-                is_better = true;
-            } else if (bids[i].time_sec == min_time_sec && 
-                       bids[i].time_ns < min_time_ns) {
-                is_better = true;
-            }
-        }
-        
-        if (is_better) {
-            best_idx = i;
-            max_price = bids[i].price;
-            min_time_sec = bids[i].time_sec;
-            min_time_ns = bids[i].time_ns;
-        }
-    }
-    
-    return best_idx;
+__device__ int get_top_bid_order_idx(const OrderbookState& state) {
+    return get_top_bid_order_idx_price_aware(state);
 }
 
 // ============================================================================
@@ -216,52 +287,56 @@ __device__ int get_top_bid_order_idx(const Order* bids, int n_orders) {
 // ============================================================================
 
 /**
- * Match a single order and generate trade
+ * Match a single order and generate trade (price-aware version)
  * Maps to JAX match_order (JaxOrderBookArrays.py:78-86)
  * 
+ * @param state Orderbook state
+ * @param is_ask_side Whether matching against ask side
  * @param top_order_idx Index of order to match against
- * @param orderside Orders to match against
  * @param qtm_remaining Quantity remaining to match (will be updated)
- * @param trades Trade records array
- * @param n_trades Max trades
  * @param aggressive_order_id ID of incoming order
  * @param time_sec Timestamp seconds
  * @param time_ns Timestamp nanoseconds
- * @param n_orders Number of orders
  */
 __device__ void match_single_order_device(
+    const OrderbookState& state,
+    bool is_ask_side,
     int top_order_idx,
-    Order* orderside,
     int32_t& qtm_remaining,
-    Trade* trades,
-    int n_trades,
     int32_t aggressive_order_id,
     int32_t time_sec,
-    int32_t time_ns,
-    int n_orders
+    int32_t time_ns
 ) {
-    if (top_order_idx < 0 || top_order_idx >= n_orders) return;
+    if (top_order_idx < 0 || top_order_idx >= state.n_orders) return;
     if (qtm_remaining <= 0) return;
+    
+    Order* orderside = is_ask_side ? state.asks : state.bids;
+    OrderMetadata* metadata = is_ask_side ? state.ask_metadata : state.bid_metadata;
+    PriceBucket* buckets = is_ask_side ? state.ask_buckets : state.bid_buckets;
+    PriceMapEntry* price_map = is_ask_side ? state.ask_price_map : state.bid_price_map;
+    OrderIDMapEntry* order_id_map = is_ask_side ? state.ask_order_id_map : state.bid_order_id_map;
+    BestPriceTracker* tracker = is_ask_side ? state.ask_tracker : state.bid_tracker;
     
     Order& passive_order = orderside[top_order_idx];
     if (passive_order.price == EMPTY_PRICE) return;
     
     // Calculate matched quantity
     int32_t matched_qty = min(qtm_remaining, passive_order.quantity);
+    int32_t old_quantity = passive_order.quantity;
     int32_t new_quantity = max(0, passive_order.quantity - matched_qty);
     
     // Update remaining quantity to match
-    qtm_remaining = max(0, qtm_remaining - passive_order.quantity);
+    qtm_remaining = max(0, qtm_remaining - matched_qty);
     
     // Find empty trade slot and record trade
-    for (int i = 0; i < n_trades; i++) {
-        if (trades[i].price == EMPTY_PRICE) {
-            trades[i].price = passive_order.price;
-            trades[i].quantity = matched_qty;
-            trades[i].passive_order_id = passive_order.order_id;
-            trades[i].aggressive_order_id = aggressive_order_id;
-            trades[i].time_sec = time_sec;
-            trades[i].time_ns = time_ns;
+    for (int i = 0; i < state.n_trades; i++) {
+        if (state.trades[i].price == EMPTY_PRICE) {
+            state.trades[i].price = passive_order.price;
+            state.trades[i].quantity = matched_qty;
+            state.trades[i].passive_order_id = passive_order.order_id;
+            state.trades[i].aggressive_order_id = aggressive_order_id;
+            state.trades[i].time_sec = time_sec;
+            state.trades[i].time_ns = time_ns;
             break;
         }
     }
@@ -269,18 +344,56 @@ __device__ void match_single_order_device(
     // Update passive order quantity
     passive_order.quantity = new_quantity;
     
-    // Clean up if quantity is zero
+    int32_t bucket_idx = metadata[top_order_idx].price_bucket_idx;
+    
+    // If fully matched, remove from structures
     if (new_quantity <= 0) {
+        // Remove from price bucket
+        if (bucket_idx != EMPTY_INDEX) {
+            remove_order_from_bucket(buckets, metadata, orderside, bucket_idx, top_order_idx, old_quantity);
+            
+            // If bucket is now empty, remove from price map
+            if (buckets[bucket_idx].is_empty()) {
+                remove_price_bucket(price_map, passive_order.price, state.price_map_size);
+            }
+            
+            // Update best price tracker if we removed the best price
+            bool need_update = false;
+            if (is_ask_side && bucket_idx == tracker->best_ask_bucket_idx) {
+                need_update = true;
+            } else if (!is_ask_side && bucket_idx == tracker->best_bid_bucket_idx) {
+                need_update = true;
+            }
+            
+            if (need_update) {
+                if (is_ask_side) {
+                    update_best_ask_price(buckets, price_map, tracker, state.n_price_buckets, state.price_map_size);
+                } else {
+                    update_best_bid_price(buckets, price_map, tracker, state.n_price_buckets, state.price_map_size);
+                }
+            }
+        }
+        
+        // Remove from order-ID map
+        remove_order_id_map(order_id_map, passive_order.order_id, state.order_id_map_size);
+        
+        // Clear order
         passive_order.price = EMPTY_PRICE;
         passive_order.order_id = 0;
         passive_order.trader_id = 0;
         passive_order.time_sec = 0;
         passive_order.time_ns = 0;
+    } else {
+        // Partial match - update bucket quantity
+        if (bucket_idx != EMPTY_INDEX) {
+            int32_t qty_delta = old_quantity - new_quantity;
+            buckets[bucket_idx].total_quantity = max(0, buckets[bucket_idx].total_quantity - qty_delta);
+        }
     }
 }
 
 /**
- * Match against ask orders (for incoming buy order)
+ * Match against ask orders (for incoming buy order) - price-aware version
  * Maps to JAX _match_against_ask_orders (JaxOrderBookArrays.py:127-130)
  * 
  * Iteratively matches against best ask until:
@@ -289,43 +402,37 @@ __device__ void match_single_order_device(
  * - No more ask orders available
  */
 __device__ void match_against_asks_device(
-    Order* asks,
-    Order* bids,
-    Trade* trades,
-    const Message& msg,
-    int n_orders,
-    int n_trades
+    const OrderbookState& state,
+    const Message& msg
 ) {
     int32_t qtm_remaining = msg.quantity;
     int32_t limit_price = msg.price;
     
     // Keep matching while we have quantity and valid asks
     while (qtm_remaining > 0) {
-        // Get best ask
-        int top_ask_idx = get_top_ask_order_idx(asks, n_orders);
+        // Get best ask using price-aware lookup (O(1))
+        int top_ask_idx = get_top_ask_order_idx(state);
         
         // Check if we can match
-        if (top_ask_idx == -1) break;  // No asks available
-        if (asks[top_ask_idx].price == EMPTY_PRICE) break;  // No valid ask
-        if (asks[top_ask_idx].price > limit_price) break;  // Price too high
+        if (top_ask_idx == EMPTY_INDEX) break;  // No asks available
+        if (state.asks[top_ask_idx].price == EMPTY_PRICE) break;  // No valid ask
+        if (state.asks[top_ask_idx].price > limit_price) break;  // Price too high
         
         // Match against this ask
         match_single_order_device(
+            state,
+            true,  // is_ask_side
             top_ask_idx,
-            asks,
             qtm_remaining,
-            trades,
-            n_trades,
             msg.order_id,
             msg.time_sec,
-            msg.time_ns,
-            n_orders
+            msg.time_ns
         );
     }
 }
 
 /**
- * Match against bid orders (for incoming sell order)
+ * Match against bid orders (for incoming sell order) - price-aware version
  * Maps to JAX _match_against_bid_orders (JaxOrderBookArrays.py:115-118)
  * 
  * Iteratively matches against best bid until:
@@ -334,37 +441,31 @@ __device__ void match_against_asks_device(
  * - No more bid orders available
  */
 __device__ void match_against_bids_device(
-    Order* asks,
-    Order* bids,
-    Trade* trades,
-    const Message& msg,
-    int n_orders,
-    int n_trades
+    const OrderbookState& state,
+    const Message& msg
 ) {
     int32_t qtm_remaining = msg.quantity;
     int32_t limit_price = msg.price;
     
     // Keep matching while we have quantity and valid bids
     while (qtm_remaining > 0) {
-        // Get best bid
-        int top_bid_idx = get_top_bid_order_idx(bids, n_orders);
+        // Get best bid using price-aware lookup (O(1))
+        int top_bid_idx = get_top_bid_order_idx(state);
         
         // Check if we can match
-        if (top_bid_idx == -1) break;  // No bids available
-        if (bids[top_bid_idx].price == EMPTY_PRICE) break;  // No valid bid
-        if (bids[top_bid_idx].price < limit_price) break;  // Price too low
+        if (top_bid_idx == EMPTY_INDEX) break;  // No bids available
+        if (state.bids[top_bid_idx].price == EMPTY_PRICE) break;  // No valid bid
+        if (state.bids[top_bid_idx].price < limit_price) break;  // Price too low
         
         // Match against this bid
         match_single_order_device(
+            state,
+            false,  // is_ask_side
             top_bid_idx,
-            bids,
             qtm_remaining,
-            trades,
-            n_trades,
             msg.order_id,
             msg.time_sec,
-            msg.time_ns,
-            n_orders
+            msg.time_ns
         );
     }
 }
@@ -374,18 +475,14 @@ __device__ void match_against_bids_device(
 // ============================================================================
 
 /**
- * Process a single message (add, cancel, or match)
+ * Process a single message (add, cancel, or match) - price-aware version
  * Maps to JAX cond_type_side (JaxOrderBookArrays.py:181-206)
  * 
  * Dispatches to appropriate function based on message type and side
  */
 __device__ void process_message_device(
-    Order* asks,
-    Order* bids,
-    Trade* trades,
-    const Message& msg,
-    int n_orders,
-    int n_trades
+    const OrderbookState& state,
+    const Message& msg
 ) {
     // Determine action based on type and side
     // Type: 1=limit, 2=cancel, 3=delete, 4=market
@@ -394,31 +491,28 @@ __device__ void process_message_device(
     if (msg.type == Message::CANCEL || msg.type == Message::DELETE) {
         // Cancel order
         if (msg.side == Message::ASK) {
-            cancel_order_device(asks, msg, n_orders);
+            cancel_order_device(state, true, msg);  // is_ask_side = true
         } else if (msg.side == Message::BID) {
-            cancel_order_device(bids, msg, n_orders);
+            cancel_order_device(state, false, msg);  // is_ask_side = false
         }
     }
     else if (msg.type == Message::LIMIT) {
         // Limit order - need to track remaining quantity after matching
         if (msg.side == Message::ASK) {
             // Sell limit: match against bids, then add remainder
-            
-            // Match against bids (this will consume what it can)
-            // We need to track how much was actually matched
             int32_t qtm_remaining = msg.quantity;
             int32_t limit_price = msg.price;
             
             // Keep matching while we have quantity and valid bids
             while (qtm_remaining > 0) {
-                int top_bid_idx = get_top_bid_order_idx(bids, n_orders);
-                if (top_bid_idx == -1) break;
-                if (bids[top_bid_idx].price == EMPTY_PRICE) break;
-                if (bids[top_bid_idx].price < limit_price) break;
+                int top_bid_idx = get_top_bid_order_idx(state);
+                if (top_bid_idx == EMPTY_INDEX) break;
+                if (state.bids[top_bid_idx].price == EMPTY_PRICE) break;
+                if (state.bids[top_bid_idx].price < limit_price) break;
                 
                 match_single_order_device(
-                    top_bid_idx, bids, qtm_remaining, trades, n_trades,
-                    msg.order_id, msg.time_sec, msg.time_ns, n_orders
+                    state, false, top_bid_idx, qtm_remaining,
+                    msg.order_id, msg.time_sec, msg.time_ns
                 );
             }
             
@@ -429,26 +523,23 @@ __device__ void process_message_device(
             if (remaining > 0) {
                 Message remaining_msg = msg;
                 remaining_msg.quantity = remaining;
-                add_order_device(asks, remaining_msg, n_orders);
+                add_order_device(state, true, remaining_msg);  // is_ask_side = true
             }
         } else if (msg.side == Message::BID) {
             // Buy limit: match against asks, then add remainder
-            
-            // Match against asks (this will consume what it can)
-            // We need to track how much was actually matched
             int32_t qtm_remaining = msg.quantity;
             int32_t limit_price = msg.price;
             
             // Keep matching while we have quantity and valid asks
             while (qtm_remaining > 0) {
-                int top_ask_idx = get_top_ask_order_idx(asks, n_orders);
-                if (top_ask_idx == -1) break;
-                if (asks[top_ask_idx].price == EMPTY_PRICE) break;
-                if (asks[top_ask_idx].price > limit_price) break;
+                int top_ask_idx = get_top_ask_order_idx(state);
+                if (top_ask_idx == EMPTY_INDEX) break;
+                if (state.asks[top_ask_idx].price == EMPTY_PRICE) break;
+                if (state.asks[top_ask_idx].price > limit_price) break;
                 
                 match_single_order_device(
-                    top_ask_idx, asks, qtm_remaining, trades, n_trades,
-                    msg.order_id, msg.time_sec, msg.time_ns, n_orders
+                    state, true, top_ask_idx, qtm_remaining,
+                    msg.order_id, msg.time_sec, msg.time_ns
                 );
             }
             
@@ -459,7 +550,7 @@ __device__ void process_message_device(
             if (remaining > 0) {
                 Message remaining_msg = msg;
                 remaining_msg.quantity = remaining;
-                add_order_device(bids, remaining_msg, n_orders);
+                add_order_device(state, false, remaining_msg);  // is_ask_side = false
             }
         }
     }
@@ -469,11 +560,11 @@ __device__ void process_message_device(
         if (msg.side == Message::BID) {
             // Buy market: match against asks at any price
             match_msg.price = MAX_INT;  // Will match any ask price
-            match_against_asks_device(asks, bids, trades, match_msg, n_orders, n_trades);
+            match_against_asks_device(state, match_msg);
         } else if (msg.side == Message::ASK) {
             // Sell market: match against bids at any price
             match_msg.price = 0;  // Will match any bid price
-            match_against_bids_device(asks, bids, trades, match_msg, n_orders, n_trades);
+            match_against_bids_device(state, match_msg);
         }
     }
 }

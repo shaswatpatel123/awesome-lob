@@ -313,6 +313,211 @@ __device__ inline void atomic_max_int32(int32_t* address, int32_t val) {
     atomicMax((int*)address, (int)val);
 }
 
+// ============================================================================
+// PRICE-AWARE DEVICE UTILITY FUNCTIONS
+// ============================================================================
+
+/**
+ * Hash function for price -> hash table index
+ * @param price Price to hash
+ * @param map_size Size of hash map
+ * @return Hash table index
+ */
+__device__ inline int32_t hash_price(int32_t price, int32_t map_size) {
+    // Simple hash function for prices
+    uint32_t hash = (uint32_t)(price) * 2654435761U; // Knuth's multiplicative hash
+    return (int32_t)(hash % (uint32_t)map_size);
+}
+
+/**
+ * Hash function for order ID -> hash table index
+ * @param order_id Order ID to hash
+ * @param map_size Size of hash map
+ * @return Hash table index
+ */
+__device__ inline int32_t hash_order_id(int32_t order_id, int32_t map_size) {
+    uint32_t hash = (uint32_t)(order_id) * 2654435761U;
+    return (int32_t)(hash % (uint32_t)map_size);
+}
+
+/**
+ * Find price bucket index for a given price using hash map
+ * Uses linear probing for collisions
+ * @param price_map Price map array
+ * @param price Price to find
+ * @param map_size Size of price map
+ * @return Bucket index, or EMPTY_INDEX if not found
+ */
+__device__ int32_t find_price_bucket(
+    PriceMapEntry* price_map,
+    int32_t price,
+    int32_t map_size
+);
+
+/**
+ * Insert price -> bucket mapping into hash map
+ * Uses linear probing for collisions
+ * @param price_map Price map array
+ * @param price Price key
+ * @param bucket_idx Bucket index to store
+ * @param map_size Size of price map
+ * @return true if inserted successfully, false if map is full
+ */
+__device__ bool insert_price_bucket(
+    PriceMapEntry* price_map,
+    int32_t price,
+    int32_t bucket_idx,
+    int32_t map_size
+);
+
+/**
+ * Remove price -> bucket mapping from hash map
+ * @param price_map Price map array
+ * @param price Price key to remove
+ * @param map_size Size of price map
+ */
+__device__ void remove_price_bucket(
+    PriceMapEntry* price_map,
+    int32_t price,
+    int32_t map_size
+);
+
+/**
+ * Find order index by order ID using hash map
+ * @param order_id_map Order-ID map array
+ * @param order_id Order ID to find
+ * @param map_size Size of order-ID map
+ * @return Order index, or EMPTY_INDEX if not found
+ */
+__device__ int32_t find_order_by_id_map(
+    OrderIDMapEntry* order_id_map,
+    int32_t order_id,
+    int32_t map_size
+);
+
+/**
+ * Insert order_id -> order_idx mapping into hash map
+ * @param order_id_map Order-ID map array
+ * @param order_id Order ID key
+ * @param order_idx Order index to store
+ * @param map_size Size of order-ID map
+ * @return true if inserted successfully
+ */
+__device__ bool insert_order_id_map(
+    OrderIDMapEntry* order_id_map,
+    int32_t order_id,
+    int32_t order_idx,
+    int32_t map_size
+);
+
+/**
+ * Remove order_id -> order_idx mapping from hash map
+ * @param order_id_map Order-ID map array
+ * @param order_id Order ID to remove
+ * @param map_size Size of order-ID map
+ */
+__device__ void remove_order_id_map(
+    OrderIDMapEntry* order_id_map,
+    int32_t order_id,
+    int32_t map_size
+);
+
+/**
+ * Find or create a price bucket for a given price
+ * @param buckets Bucket array
+ * @param price_map Price map
+ * @param price Price level
+ * @param n_buckets Maximum number of buckets
+ * @param map_size Size of price map
+ * @return Bucket index, or EMPTY_INDEX if cannot create
+ */
+__device__ int32_t get_or_create_price_bucket(
+    PriceBucket* buckets,
+    PriceMapEntry* price_map,
+    int32_t price,
+    int32_t n_buckets,
+    int32_t map_size
+);
+
+/**
+ * Add order to price bucket (at tail, FIFO)
+ * @param buckets Bucket array
+ * @param metadata Order metadata array
+ * @param orders Order array
+ * @param bucket_idx Bucket index
+ * @param order_idx Order index to add
+ */
+__device__ void add_order_to_bucket(
+    PriceBucket* buckets,
+    OrderMetadata* metadata,
+    Order* orders,
+    int32_t bucket_idx,
+    int32_t order_idx
+);
+
+/**
+ * Remove order from price bucket
+ * @param buckets Bucket array
+ * @param metadata Order metadata array
+ * @param orders Order array
+ * @param bucket_idx Bucket index
+ * @param order_idx Order index to remove
+ */
+__device__ void remove_order_from_bucket(
+    PriceBucket* buckets,
+    OrderMetadata* metadata,
+    Order* orders,
+    int32_t bucket_idx,
+    int32_t order_idx,
+    int32_t removed_quantity
+);
+
+/**
+ * Update best price tracker for asks (find minimum price)
+ * @param buckets Bucket array
+ * @param price_map Price map
+ * @param tracker Best price tracker to update
+ * @param n_buckets Number of buckets
+ * @param map_size Size of price map
+ */
+__device__ void update_best_ask_price(
+    PriceBucket* buckets,
+    PriceMapEntry* price_map,
+    BestPriceTracker* tracker,
+    int32_t n_buckets,
+    int32_t map_size
+);
+
+/**
+ * Update best price tracker for bids (find maximum price)
+ * @param buckets Bucket array
+ * @param price_map Price map
+ * @param tracker Best price tracker to update
+ * @param n_buckets Number of buckets
+ * @param map_size Size of price map
+ */
+__device__ void update_best_bid_price(
+    PriceBucket* buckets,
+    PriceMapEntry* price_map,
+    BestPriceTracker* tracker,
+    int32_t n_buckets,
+    int32_t map_size
+);
+
+/**
+ * Get best ask order index from tracker
+ * @param state Orderbook state
+ * @return Order index of best ask, or EMPTY_INDEX if none
+ */
+__device__ int32_t get_top_ask_order_idx_price_aware(const OrderbookState& state);
+
+/**
+ * Get best bid order index from tracker
+ * @param state Orderbook state
+ * @return Order index of best bid, or EMPTY_INDEX if none
+ */
+__device__ int32_t get_top_bid_order_idx_price_aware(const OrderbookState& state);
+
 } // namespace cuda_orderbook
 
 #endif // CUDA_ORDERBOOK_UTILS_H
