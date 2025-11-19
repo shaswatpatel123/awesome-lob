@@ -288,8 +288,8 @@ void match_single_order_cpu(
     int32_t matched_qty = std::min(qtm_remaining, passive_order.quantity);
     int32_t new_quantity = std::max(0, passive_order.quantity - matched_qty);
     
-    // Update remaining quantity to match
-    qtm_remaining = std::max(0, qtm_remaining - passive_order.quantity);
+    // Update remaining quantity - subtract what was actually matched
+    qtm_remaining = std::max(0, qtm_remaining - matched_qty);
     
     // Find empty trade slot and record trade
     for (int i = 0; i < n_trades; i++) {
@@ -317,7 +317,7 @@ void match_single_order_cpu(
     }
 }
 
-void match_against_asks_cpu(
+int32_t match_against_asks_cpu(
     Order* asks,
     Order* bids,
     Trade* trades,
@@ -351,9 +351,11 @@ void match_against_asks_cpu(
             n_orders
         );
     }
+    
+    return qtm_remaining;  // Return remaining unmatched quantity
 }
 
-void match_against_bids_cpu(
+int32_t match_against_bids_cpu(
     Order* asks,
     Order* bids,
     Trade* trades,
@@ -387,6 +389,8 @@ void match_against_bids_cpu(
             n_orders
         );
     }
+    
+    return qtm_remaining;  // Return remaining unmatched quantity
 }
 
 void process_message_cpu(
@@ -414,20 +418,8 @@ void process_message_cpu(
         if (msg.side == Message::ASK) {
             // Sell limit: match against bids, then add remainder
             
-            // Count initial bid volume at or above our price
-            int32_t matchable_qty = 0;
-            for (int i = 0; i < n_orders; i++) {
-                if (bids[i].price != EMPTY_PRICE && bids[i].price >= msg.price) {
-                    matchable_qty += bids[i].quantity;
-                }
-            }
-            
-            // Match against bids
-            match_against_bids_cpu(asks, bids, trades, msg, n_orders, n_trades);
-            
-            // Calculate remaining quantity (what wasn't matched)
-            int32_t remaining = msg.quantity - matchable_qty;
-            if (remaining < 0) remaining = 0;
+            // Match against bids - returns remaining unmatched quantity
+            int32_t remaining = match_against_bids_cpu(asks, bids, trades, msg, n_orders, n_trades);
             
             // Only add if there's remaining quantity
             if (remaining > 0) {
@@ -438,20 +430,8 @@ void process_message_cpu(
         } else if (msg.side == Message::BID) {
             // Buy limit: match against asks, then add remainder
             
-            // Count initial ask volume at or below our price
-            int32_t matchable_qty = 0;
-            for (int i = 0; i < n_orders; i++) {
-                if (asks[i].price != EMPTY_PRICE && asks[i].price <= msg.price) {
-                    matchable_qty += asks[i].quantity;
-                }
-            }
-            
-            // Match against asks
-            match_against_asks_cpu(asks, bids, trades, msg, n_orders, n_trades);
-            
-            // Calculate remaining quantity (what wasn't matched)
-            int32_t remaining = msg.quantity - matchable_qty;
-            if (remaining < 0) remaining = 0;
+            // Match against asks - returns remaining unmatched quantity
+            int32_t remaining = match_against_asks_cpu(asks, bids, trades, msg, n_orders, n_trades);
             
             // Only add if there's remaining quantity
             if (remaining > 0) {

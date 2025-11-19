@@ -85,8 +85,9 @@ void cancel_order_cpu(Order* orderside, const Message& msg, int n_orders);
 
 /**
  * Match against ask orders (for incoming buy order)
+ * Returns remaining unmatched quantity
  */
-void match_against_asks_cpu(
+int32_t match_against_asks_cpu(
     Order* asks,
     Order* bids,
     Trade* trades,
@@ -97,8 +98,9 @@ void match_against_asks_cpu(
 
 /**
  * Match against bid orders (for incoming sell order)
+ * Returns remaining unmatched quantity
  */
-void match_against_bids_cpu(
+int32_t match_against_bids_cpu(
     Order* asks,
     Order* bids,
     Trade* trades,
