@@ -118,7 +118,8 @@ bool unit_test_add_order(TestStats& stats) {
     CUDA_CHECK(cudaMalloc(&gpu_batch.d_bids, 100 * sizeof(Order)));
     CUDA_CHECK(cudaMalloc(&gpu_batch.d_trades, 50 * sizeof(Trade)));
     
-    init_orderbooks_kernel<<<1, 256>>>(gpu_batch, 1);
+    // Warp-level: 1 LOB per warp, 4 warps per block = 128 threads
+    init_orderbooks_kernel<<<1, 128>>>(gpu_batch, 1);
     CUDA_CHECK(cudaDeviceSynchronize());
     
     // Create single add message
@@ -133,9 +134,8 @@ bool unit_test_add_order(TestStats& stats) {
     CUDA_CHECK(cudaMalloc(&d_msg, sizeof(Message)));
     CUDA_CHECK(cudaMemcpy(d_msg, &msg, sizeof(Message), cudaMemcpyHostToDevice));
     
-    // Allocate shared memory for parallel reduction (256 threads * struct size)
-    size_t shared_mem_size = 256 * (sizeof(int32_t) * 3 + sizeof(int)); // BestOrderInfo
-    process_messages_sequential_kernel<<<1, 256, shared_mem_size>>>(gpu_batch, d_msg, 1, 1);
+    // Warp-level: no shared memory needed (using shuffle operations)
+    process_messages_sequential_kernel<<<1, 128>>>(gpu_batch, d_msg, 1, 1);
     CUDA_CHECK(cudaDeviceSynchronize());
     
     // Copy GPU results
@@ -191,7 +191,8 @@ bool unit_test_cancel_order(TestStats& stats) {
     CUDA_CHECK(cudaMalloc(&gpu_batch.d_bids, 100 * sizeof(Order)));
     CUDA_CHECK(cudaMalloc(&gpu_batch.d_trades, 50 * sizeof(Trade)));
     
-    init_orderbooks_kernel<<<1, 256>>>(gpu_batch, 1);
+    // Warp-level: 1 LOB per warp, 4 warps per block = 128 threads
+    init_orderbooks_kernel<<<1, 128>>>(gpu_batch, 1);
     CUDA_CHECK(cudaDeviceSynchronize());
     
     // Add then cancel
@@ -211,9 +212,8 @@ bool unit_test_cancel_order(TestStats& stats) {
     CUDA_CHECK(cudaMemcpy(d_msgs, messages.data(), messages.size() * sizeof(Message), 
                          cudaMemcpyHostToDevice));
     
-    // Allocate shared memory for parallel reduction
-    size_t shared_mem_size = 256 * (sizeof(int32_t) * 3 + sizeof(int)); // BestOrderInfo
-    process_messages_sequential_kernel<<<1, 256, shared_mem_size>>>(gpu_batch, d_msgs, messages.size(), 1);
+    // Warp-level: no shared memory needed
+    process_messages_sequential_kernel<<<1, 128>>>(gpu_batch, d_msgs, messages.size(), 1);
     CUDA_CHECK(cudaDeviceSynchronize());
     
     // Copy and compare
@@ -266,7 +266,8 @@ bool unit_test_simple_match(TestStats& stats) {
     CUDA_CHECK(cudaMalloc(&gpu_batch.d_bids, 100 * sizeof(Order)));
     CUDA_CHECK(cudaMalloc(&gpu_batch.d_trades, 50 * sizeof(Trade)));
     
-    init_orderbooks_kernel<<<1, 256>>>(gpu_batch, 1);
+    // Warp-level: 1 LOB per warp, 4 warps per block = 128 threads
+    init_orderbooks_kernel<<<1, 128>>>(gpu_batch, 1);
     CUDA_CHECK(cudaDeviceSynchronize());
     
     // Perfect match scenario
@@ -285,9 +286,8 @@ bool unit_test_simple_match(TestStats& stats) {
     CUDA_CHECK(cudaMemcpy(d_msgs, messages.data(), messages.size() * sizeof(Message),
                          cudaMemcpyHostToDevice));
     
-    // Allocate shared memory for parallel reduction
-    size_t shared_mem_size = 256 * (sizeof(int32_t) * 3 + sizeof(int)); // BestOrderInfo
-    process_messages_sequential_kernel<<<1, 256, shared_mem_size>>>(gpu_batch, d_msgs, messages.size(), 1);
+    // Warp-level: no shared memory needed
+    process_messages_sequential_kernel<<<1, 128>>>(gpu_batch, d_msgs, messages.size(), 1);
     CUDA_CHECK(cudaDeviceSynchronize());
     
     // Copy and compare
@@ -352,7 +352,8 @@ bool integration_test_scenario(TestStats& stats, const char* name,
     CUDA_CHECK(cudaMalloc(&gpu_batch.d_bids, 100 * sizeof(Order)));
     CUDA_CHECK(cudaMalloc(&gpu_batch.d_trades, 50 * sizeof(Trade)));
     
-    init_orderbooks_kernel<<<1, 256>>>(gpu_batch, 1);
+    // Warp-level: 1 LOB per warp, 4 warps per block = 128 threads
+    init_orderbooks_kernel<<<1, 128>>>(gpu_batch, 1);
     CUDA_CHECK(cudaDeviceSynchronize());
     
     // Generate scenario
@@ -371,9 +372,8 @@ bool integration_test_scenario(TestStats& stats, const char* name,
     CUDA_CHECK(cudaMemcpy(d_msgs, messages.data(), messages.size() * sizeof(Message),
                          cudaMemcpyHostToDevice));
     
-    // Allocate shared memory for parallel reduction
-    size_t shared_mem_size = 256 * (sizeof(int32_t) * 3 + sizeof(int)); // BestOrderInfo
-    process_messages_sequential_kernel<<<1, 256, shared_mem_size>>>(gpu_batch, d_msgs, messages.size(), 1);
+    // Warp-level: no shared memory needed
+    process_messages_sequential_kernel<<<1, 128>>>(gpu_batch, d_msgs, messages.size(), 1);
     CUDA_CHECK(cudaDeviceSynchronize());
     
     // Copy and compare
@@ -440,8 +440,12 @@ bool functional_test_random(TestStats& stats, int num_messages, const char* size
     CUDA_CHECK(cudaMalloc(&gpu_batch.d_trades, num_books * n_trades * sizeof(Trade)));
     
     // Initialize all orderbooks
-    dim3 grid(num_books);
-    dim3 block(256);
+    // Warp-level: 1 LOB per warp, 4 warps per block = 128 threads
+    int warps_per_block = 4;
+    int books_per_block = warps_per_block;
+    int num_blocks = (num_books + books_per_block - 1) / books_per_block;
+    dim3 grid(num_blocks);
+    dim3 block(128);  // 4 warps * 32 threads
     init_orderbooks_kernel<<<grid, block>>>(gpu_batch, num_books);
     CUDA_CHECK(cudaDeviceSynchronize());
     
@@ -470,11 +474,8 @@ bool functional_test_random(TestStats& stats, int num_messages, const char* size
     
     // Process on GPU (all orderbooks in parallel)
     auto gpu_start = std::chrono::high_resolution_clock::now();
-    dim3 grid_proc(num_books);
-    dim3 block_proc(256);
-    // Allocate shared memory for parallel reduction (256 threads * BestOrderInfo)
-    size_t shared_mem_size = 256 * (sizeof(int32_t) * 3 + sizeof(int)); // BestOrderInfo
-    process_messages_sequential_kernel<<<grid_proc, block_proc, shared_mem_size>>>(gpu_batch, d_msgs, num_messages, num_books);
+    // Warp-level: reuse same grid/block from initialization
+    process_messages_sequential_kernel<<<grid, block>>>(gpu_batch, d_msgs, num_messages, num_books);
     CUDA_CHECK(cudaDeviceSynchronize());
     auto gpu_end = std::chrono::high_resolution_clock::now();
     auto gpu_time = std::chrono::duration_cast<std::chrono::microseconds>(gpu_end - gpu_start).count();

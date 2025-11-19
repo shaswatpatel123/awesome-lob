@@ -1,11 +1,8 @@
 /**
- * Orderbook Operations - Device Functions
+ * Orderbook Operations - WARP LEVEL Device Functions
  * 
- * This file contains all device functions for orderbook operations.
- * These functions are called from CUDA kernels.
- * 
- * Team 1: add_order_device, cancel_order_device
- * Team 2: matching functions (get_top_*, match_against_*)
+ * All operations redesigned for warp-level parallelism
+ * Each warp (32 threads) manages one LOB
  */
 
 #include "types.h"
@@ -13,47 +10,47 @@
 
 namespace cuda_orderbook {
 
+constexpr int WARP_SIZE = 32;
+
 // ============================================================================
 // HELPER FUNCTIONS
 // ============================================================================
 
 /**
  * Remove orders with zero or negative quantity
- * Maps to JAX __removeZeroNegQuant (JaxOrderBookArrays.py:40-41)
+ * Lane 0 performs the cleanup
  */
-__device__ void remove_zero_neg_quant_device(Order* orderside, int n_orders) {
-    for (int i = 0; i < n_orders; i++) {
-        if (orderside[i].quantity <= 0 && orderside[i].price != EMPTY_PRICE) {
-            // Mark as empty
-            orderside[i].price = EMPTY_PRICE;
-            orderside[i].quantity = 0;
-            orderside[i].order_id = 0;
-            orderside[i].trader_id = 0;
-            orderside[i].time_sec = 0;
-            orderside[i].time_ns = 0;
+__device__ void remove_zero_neg_quant_warp(Order* orderside, int n_orders, int laneId) {
+    if (laneId == 0) {
+        for (int i = 0; i < n_orders; i++) {
+            if (orderside[i].quantity <= 0 && orderside[i].price != EMPTY_PRICE) {
+                orderside[i].price = EMPTY_PRICE;
+                orderside[i].quantity = 0;
+                orderside[i].order_id = 0;
+                orderside[i].trader_id = 0;
+                orderside[i].time_sec = 0;
+                orderside[i].time_ns = 0;
+            }
         }
     }
 }
 
 // ============================================================================
-// TEAM 1: ADD AND CANCEL OPERATIONS
+// ADD AND CANCEL OPERATIONS
 // ============================================================================
 
 /**
- * Add order to orderside
- * Maps to JAX add_order (JaxOrderBookArrays.py:32-37)
- * 
- * Finds first empty slot and inserts the order
- * Cleans up any orders with <= 0 quantity
+ * Add order to orderside (warp-level)
+ * Lane 0 performs the insertion, all lanes participate
  */
-__device__ void add_order_device(
+__device__ void add_order_warp(
     Order* orderside,
     const Message& msg,
-    int n_orders
+    int n_orders,
+    int laneId
 ) {
-    // Only the "Manager" thread should perform this state-modifying action.
-    if (threadIdx.x == 0) {
-        // Find first empty slot (price == -1)
+    if (laneId == 0) {
+        // Find first empty slot
         int empty_idx = -1;
         for (int i = 0; i < n_orders; i++) {
             if (orderside[i].price == EMPTY_PRICE) {
@@ -62,40 +59,33 @@ __device__ void add_order_device(
             }
         }
         
-        if (empty_idx == -1) {
-            // Orderbook full - cannot add
-            // In production, might want to handle this differently
-            return;
+        if (empty_idx >= 0) {
+            // Add the order
+            orderside[empty_idx].price = msg.price;
+            orderside[empty_idx].quantity = max(0, msg.quantity);
+            orderside[empty_idx].order_id = msg.order_id;
+            orderside[empty_idx].trader_id = msg.trader_id;
+            orderside[empty_idx].time_sec = msg.time_sec;
+            orderside[empty_idx].time_ns = msg.time_ns;
+            
+            // Clean up zero/negative quantities
+            remove_zero_neg_quant_warp(orderside, n_orders, 0);
         }
-        
-        // Add the order
-        orderside[empty_idx].price = msg.price;
-        orderside[empty_idx].quantity = max(0, msg.quantity);
-        orderside[empty_idx].order_id = msg.order_id;
-        orderside[empty_idx].trader_id = msg.trader_id;
-        orderside[empty_idx].time_sec = msg.time_sec;
-        orderside[empty_idx].time_ns = msg.time_ns;
-        
-        // Clean up any orders with zero/negative quantity
-        remove_zero_neg_quant_device(orderside, n_orders);
     }
 }
 
 /**
- * Cancel order from orderside
- * Maps to JAX cancel_order (JaxOrderBookArrays.py:52-65)
- * 
- * Finds order by ID (or by price for INITID orders)
- * Reduces quantity, removes if <= 0
+ * Cancel order from orderside (warp-level)
+ * Lane 0 performs the cancellation
  */
-__device__ void cancel_order_device(
+__device__ void cancel_order_warp(
     Order* orderside,
     const Message& msg,
-    int n_orders
+    int n_orders,
+    int laneId
 ) {
-    // Only the "Manager" thread should perform this state-modifying action.
-    if (threadIdx.x == 0) {
-        // First try to find by order_id
+    if (laneId == 0) {
+        // Find by order_id
         int idx = -1;
         for (int i = 0; i < n_orders; i++) {
             if (orderside[i].order_id == msg.order_id) {
@@ -104,7 +94,7 @@ __device__ void cancel_order_device(
             }
         }
         
-        // If not found and this might be an INITID order, search by price
+        // If not found, search by price for INITID orders
         if (idx == -1) {
             for (int i = 0; i < n_orders; i++) {
                 if (orderside[i].price == msg.price && 
@@ -115,189 +105,155 @@ __device__ void cancel_order_device(
             }
         }
         
-        if (idx == -1) {
-            // Order not found
-            return;
+        if (idx >= 0) {
+            // Reduce quantity
+            orderside[idx].quantity -= msg.quantity;
+            
+            // Clean up
+            remove_zero_neg_quant_warp(orderside, n_orders, 0);
         }
-        
-        // Reduce quantity
-        orderside[idx].quantity -= msg.quantity;
-        
-        // Clean up orders with zero/negative quantity
-        remove_zero_neg_quant_device(orderside, n_orders);
     }
 }
 
 // ============================================================================
-// TEAM 2: MATCHING ENGINE - PRIORITY SELECTION (PARALLEL)
+// MATCHING ENGINE - WARP-LEVEL PARALLEL REDUCTION
 // ============================================================================
 
 /**
- * Helper struct for parallel reduction to find best order
+ * Find best ask order using warp-level reduction
+ * All lanes participate - returns valid index in all lanes
  */
-struct BestOrderInfo {
-    int32_t price;
-    int32_t time_sec;
-    int32_t time_ns;
-    int index;
-};
+__device__ int find_best_ask_warp(const Order* asks, int n_orders, int laneId) {
+    // Each lane finds best in its chunk
+    int32_t best_price = MAX_INT;
+    int32_t best_time_sec = MAX_INT;
+    int32_t best_time_ns = MAX_INT;
+    int best_idx = -1;
 
-/**
- * Finds the best ask order (lowest price, earliest time) using an intra-block
- * parallel reduction. The entire block (the "Team") collaborates on this search.
- */
-__device__ int find_best_ask_parallel(const Order* asks, int n_orders) {
-    // Shared memory for the reduction
-    extern __shared__ BestOrderInfo shared_best[];
-    
-    // Each thread finds the best order in its own subset of the data
-    BestOrderInfo local_best;
-    local_best.price = MAX_INT;
-    local_best.time_sec = MAX_INT;
-    local_best.time_ns = MAX_INT;
-    local_best.index = -1;
-
-    for (int i = threadIdx.x; i < n_orders; i += blockDim.x) {
+    for (int i = laneId; i < n_orders; i += WARP_SIZE) {
         if (asks[i].price != EMPTY_PRICE) {
             bool is_better = false;
-            if (asks[i].price < local_best.price) {
+            if (asks[i].price < best_price) {
                 is_better = true;
-            } else if (asks[i].price == local_best.price) {
-                if (asks[i].time_sec < local_best.time_sec) {
+            } else if (asks[i].price == best_price) {
+                if (asks[i].time_sec < best_time_sec) {
                     is_better = true;
-                } else if (asks[i].time_sec == local_best.time_sec && asks[i].time_ns < local_best.time_ns) {
+                } else if (asks[i].time_sec == best_time_sec && asks[i].time_ns < best_time_ns) {
                     is_better = true;
                 }
             }
             if (is_better) {
-                local_best.price = asks[i].price;
-                local_best.time_sec = asks[i].time_sec;
-                local_best.time_ns = asks[i].time_ns;
-                local_best.index = i;
+                best_price = asks[i].price;
+                best_time_sec = asks[i].time_sec;
+                best_time_ns = asks[i].time_ns;
+                best_idx = i;
             }
         }
     }
 
-    // Copy local result to shared memory
-    shared_best[threadIdx.x] = local_best;
-    __syncthreads();
-
-    // Perform the reduction in shared memory
-    for (unsigned int s = blockDim.x / 2; s > 0; s >>= 1) {
-        if (threadIdx.x < s) {
-            BestOrderInfo other = shared_best[threadIdx.x + s];
-            bool is_other_better = false;
-            if (other.price < shared_best[threadIdx.x].price) {
+    // Warp-level reduction using shuffle
+    for (int offset = WARP_SIZE/2; offset > 0; offset /= 2) {
+        int32_t other_price = __shfl_down_sync(0xFFFFFFFF, best_price, offset);
+        int32_t other_time_sec = __shfl_down_sync(0xFFFFFFFF, best_time_sec, offset);
+        int32_t other_time_ns = __shfl_down_sync(0xFFFFFFFF, best_time_ns, offset);
+        int other_idx = __shfl_down_sync(0xFFFFFFFF, best_idx, offset);
+        
+        bool is_other_better = false;
+        if (other_price < best_price) {
+            is_other_better = true;
+        } else if (other_price == best_price) {
+            if (other_time_sec < best_time_sec) {
                 is_other_better = true;
-            } else if (other.price == shared_best[threadIdx.x].price) {
-                if (other.time_sec < shared_best[threadIdx.x].time_sec) {
-                    is_other_better = true;
-                } else if (other.time_sec == shared_best[threadIdx.x].time_sec && other.time_ns < shared_best[threadIdx.x].time_ns) {
-                    is_other_better = true;
-                }
-            }
-            if (is_other_better) {
-                shared_best[threadIdx.x] = other;
+            } else if (other_time_sec == best_time_sec && other_time_ns < best_time_ns) {
+                is_other_better = true;
             }
         }
-        __syncthreads();
+        
+        if (is_other_better) {
+            best_price = other_price;
+            best_time_sec = other_time_sec;
+            best_time_ns = other_time_ns;
+            best_idx = other_idx;
+        }
     }
 
-    // The best order index is now in shared_best[0].index
-    if (threadIdx.x == 0) {
-        return shared_best[0].index;
-    }
-    return -1; // Only thread 0 should return the result
+    // Broadcast result from lane 0 to all lanes
+    best_idx = __shfl_sync(0xFFFFFFFF, best_idx, 0);
+    return best_idx;
 }
 
 /**
- * Finds the best bid order (highest price, earliest time) using an intra-block
- * parallel reduction.
+ * Find best bid order using warp-level reduction
+ * All lanes participate - returns valid index in all lanes
  */
-__device__ int find_best_bid_parallel(const Order* bids, int n_orders) {
-    // Shared memory for the reduction
-    extern __shared__ BestOrderInfo shared_best[];
+__device__ int find_best_bid_warp(const Order* bids, int n_orders, int laneId) {
+    // Each lane finds best in its chunk
+    int32_t best_price = -1;
+    int32_t best_time_sec = MAX_INT;
+    int32_t best_time_ns = MAX_INT;
+    int best_idx = -1;
 
-    // Each thread finds the best order in its own subset of the data
-    BestOrderInfo local_best;
-    local_best.price = -1;
-    local_best.time_sec = MAX_INT;
-    local_best.time_ns = MAX_INT;
-    local_best.index = -1;
-
-    for (int i = threadIdx.x; i < n_orders; i += blockDim.x) {
+    for (int i = laneId; i < n_orders; i += WARP_SIZE) {
         if (bids[i].price != EMPTY_PRICE) {
             bool is_better = false;
-            if (bids[i].price > local_best.price) {
+            if (bids[i].price > best_price) {
                 is_better = true;
-            } else if (bids[i].price == local_best.price) {
-                if (bids[i].time_sec < local_best.time_sec) {
+            } else if (bids[i].price == best_price) {
+                if (bids[i].time_sec < best_time_sec) {
                     is_better = true;
-                } else if (bids[i].time_sec == local_best.time_sec && bids[i].time_ns < local_best.time_ns) {
+                } else if (bids[i].time_sec == best_time_sec && bids[i].time_ns < best_time_ns) {
                     is_better = true;
                 }
             }
             if (is_better) {
-                local_best.price = bids[i].price;
-                local_best.time_sec = bids[i].time_sec;
-                local_best.time_ns = bids[i].time_ns;
-                local_best.index = i;
+                best_price = bids[i].price;
+                best_time_sec = bids[i].time_sec;
+                best_time_ns = bids[i].time_ns;
+                best_idx = i;
             }
         }
     }
 
-    // Copy local result to shared memory
-    shared_best[threadIdx.x] = local_best;
-    __syncthreads();
-
-    // Perform the reduction in shared memory
-    for (unsigned int s = blockDim.x / 2; s > 0; s >>= 1) {
-        if (threadIdx.x < s) {
-            BestOrderInfo other = shared_best[threadIdx.x + s];
-            bool is_other_better = false;
-            if (other.price > shared_best[threadIdx.x].price) {
+    // Warp-level reduction using shuffle
+    for (int offset = WARP_SIZE/2; offset > 0; offset /= 2) {
+        int32_t other_price = __shfl_down_sync(0xFFFFFFFF, best_price, offset);
+        int32_t other_time_sec = __shfl_down_sync(0xFFFFFFFF, best_time_sec, offset);
+        int32_t other_time_ns = __shfl_down_sync(0xFFFFFFFF, best_time_ns, offset);
+        int other_idx = __shfl_down_sync(0xFFFFFFFF, best_idx, offset);
+        
+        bool is_other_better = false;
+        if (other_price > best_price) {
+            is_other_better = true;
+        } else if (other_price == best_price) {
+            if (other_time_sec < best_time_sec) {
                 is_other_better = true;
-            } else if (other.price == shared_best[threadIdx.x].price) {
-                if (other.time_sec < shared_best[threadIdx.x].time_sec) {
-                    is_other_better = true;
-                } else if (other.time_sec == shared_best[threadIdx.x].time_sec && other.time_ns < shared_best[threadIdx.x].time_ns) {
-                    is_other_better = true;
-                }
-            }
-            if (is_other_better) {
-                shared_best[threadIdx.x] = other;
+            } else if (other_time_sec == best_time_sec && other_time_ns < best_time_ns) {
+                is_other_better = true;
             }
         }
-        __syncthreads();
+        
+        if (is_other_better) {
+            best_price = other_price;
+            best_time_sec = other_time_sec;
+            best_time_ns = other_time_ns;
+            best_idx = other_idx;
+        }
     }
 
-    // The best order index is now in shared_best[0].index
-    if (threadIdx.x == 0) {
-        return shared_best[0].index;
-    }
-    return -1; // Only thread 0 should return the result
+    // Broadcast result from lane 0 to all lanes
+    best_idx = __shfl_sync(0xFFFFFFFF, best_idx, 0);
+    return best_idx;
 }
 
-
 // ============================================================================
-// TEAM 2: MATCHING ENGINE - ORDER MATCHING
+// ORDER MATCHING
 // ============================================================================
 
 /**
  * Match a single order and generate trade
- * Maps to JAX match_order (JaxOrderBookArrays.py:78-86)
- * 
- * @param top_order_idx Index of order to match against
- * @param orderside Orders to match against
- * @param qtm_remaining Quantity remaining to match (will be updated)
- * @param trades Trade records array
- * @param n_trades Max trades
- * @param aggressive_order_id ID of incoming order
- * @param time_sec Timestamp seconds
- * @param time_ns Timestamp nanoseconds
- * @param n_orders Number of orders
+ * Lane 0 performs the matching
  */
-__device__ void match_single_order_device(
+__device__ void match_single_order_warp(
     int top_order_idx,
     Order* orderside,
     int32_t& qtm_remaining,
@@ -306,174 +262,134 @@ __device__ void match_single_order_device(
     int32_t aggressive_order_id,
     int32_t time_sec,
     int32_t time_ns,
-    int n_orders
+    int n_orders,
+    int laneId
 ) {
-    if (top_order_idx < 0 || top_order_idx >= n_orders) return;
-    if (qtm_remaining <= 0) return;
-    
-    Order& passive_order = orderside[top_order_idx];
-    if (passive_order.price == EMPTY_PRICE) return;
-    
-    // Calculate matched quantity
-    int32_t matched_qty = min(qtm_remaining, passive_order.quantity);
-    int32_t new_quantity = max(0, passive_order.quantity - matched_qty);
-    
-    // Update remaining quantity to match
-    qtm_remaining = max(0, qtm_remaining - passive_order.quantity);
-    
-    // Find empty trade slot and record trade
-    for (int i = 0; i < n_trades; i++) {
-        if (trades[i].price == EMPTY_PRICE) {
-            trades[i].price = passive_order.price;
-            trades[i].quantity = matched_qty;
-            trades[i].passive_order_id = passive_order.order_id;
-            trades[i].aggressive_order_id = aggressive_order_id;
-            trades[i].time_sec = time_sec;
-            trades[i].time_ns = time_ns;
-            break;
+    if (laneId == 0) {
+        if (top_order_idx < 0 || top_order_idx >= n_orders) return;
+        if (qtm_remaining <= 0) return;
+        
+        Order& passive_order = orderside[top_order_idx];
+        if (passive_order.price == EMPTY_PRICE) return;
+        
+        // Calculate matched quantity
+        int32_t matched_qty = min(qtm_remaining, passive_order.quantity);
+        int32_t new_quantity = max(0, passive_order.quantity - matched_qty);
+        
+        // Update remaining quantity
+        qtm_remaining = max(0, qtm_remaining - passive_order.quantity);
+        
+        // Record trade
+        for (int i = 0; i < n_trades; i++) {
+            if (trades[i].price == EMPTY_PRICE) {
+                trades[i].price = passive_order.price;
+                trades[i].quantity = matched_qty;
+                trades[i].passive_order_id = passive_order.order_id;
+                trades[i].aggressive_order_id = aggressive_order_id;
+                trades[i].time_sec = time_sec;
+                trades[i].time_ns = time_ns;
+                break;
+            }
         }
-    }
-    
-    // Update passive order quantity
-    passive_order.quantity = new_quantity;
-    
-    // Clean up if quantity is zero
-    if (new_quantity <= 0) {
-        passive_order.price = EMPTY_PRICE;
-        passive_order.order_id = 0;
-        passive_order.trader_id = 0;
-        passive_order.time_sec = 0;
-        passive_order.time_ns = 0;
+        
+        // Update passive order
+        passive_order.quantity = new_quantity;
+        
+        if (new_quantity <= 0) {
+            passive_order.price = EMPTY_PRICE;
+            passive_order.order_id = 0;
+            passive_order.trader_id = 0;
+            passive_order.time_sec = 0;
+            passive_order.time_ns = 0;
+        }
     }
 }
 
 /**
  * Match against ask orders (for incoming buy order)
- * Maps to JAX _match_against_ask_orders (JaxOrderBookArrays.py:127-130)
- * 
- * Iteratively matches against best ask until:
- * - No more quantity to match (qtm_remaining <= 0)
- * - No more matching asks (price > limit_price)
- * - No more ask orders available
+ * All lanes participate in finding best, lane 0 executes match
  */
-__device__ void match_against_asks_device(
+__device__ void match_against_asks_warp(
     Order* asks,
     Order* bids,
     Trade* trades,
     const Message& msg,
     int n_orders,
-    int n_trades
+    int n_trades,
+    int laneId
 ) {
-    __shared__ int32_t shared_qtm_remaining;
-    __shared__ int shared_top_idx;
-    __shared__ int shared_can_continue;
-
     int32_t qtm_remaining = msg.quantity;
     int32_t limit_price = msg.price;
 
-    if (threadIdx.x == 0) {
-        shared_qtm_remaining = qtm_remaining;
-    }
-    __syncthreads();
-
     while (true) {
-        int current_remaining = shared_qtm_remaining;
-        if (current_remaining <= 0) break;
+        // Broadcast current remaining qty to all lanes
+        qtm_remaining = __shfl_sync(0xFFFFFFFF, qtm_remaining, 0);
+        if (qtm_remaining <= 0) break;
 
-        // TEAM OPERATION: All threads collaborate to find the best ask
-        int top_ask_idx = find_best_ask_parallel(asks, n_orders);
-        if (threadIdx.x == 0) {
-            shared_top_idx = top_ask_idx;
-        }
-        __syncthreads();
-        top_ask_idx = shared_top_idx;
+        // All lanes participate in finding best ask
+        int top_ask_idx = find_best_ask_warp(asks, n_orders, laneId);
 
-        // MANAGER OPERATION: Thread 0 checks if the match can proceed
-        if (threadIdx.x == 0) {
-            bool can_continue = !(top_ask_idx == -1 ||
-                                  asks[top_ask_idx].price == EMPTY_PRICE ||
-                                  asks[top_ask_idx].price > limit_price);
-            shared_can_continue = can_continue ? 1 : 0;
+        // Lane 0 checks if we can continue
+        bool can_continue = true;
+        if (laneId == 0) {
+            can_continue = !(top_ask_idx == -1 ||
+                           asks[top_ask_idx].price == EMPTY_PRICE ||
+                           asks[top_ask_idx].price > limit_price);
         }
-        __syncthreads();
-        if (!shared_can_continue) break;
         
-        // MANAGER OPERATION: Thread 0 performs the actual match and state update
-        if (threadIdx.x == 0) {
-            match_single_order_device(
-                top_ask_idx, asks, qtm_remaining, trades, n_trades,
-                msg.order_id, msg.time_sec, msg.time_ns, n_orders
-            );
-            shared_qtm_remaining = qtm_remaining;
-        }
-
-        // All threads must wait for the state update to be visible
-        __syncthreads();
+        // Broadcast decision to all lanes
+        can_continue = __shfl_sync(0xFFFFFFFF, can_continue ? 1 : 0, 0) != 0;
+        if (!can_continue) break;
+        
+        // Lane 0 performs the match
+        match_single_order_warp(
+            top_ask_idx, asks, qtm_remaining, trades, n_trades,
+            msg.order_id, msg.time_sec, msg.time_ns, n_orders, laneId
+        );
     }
 }
 
 /**
  * Match against bid orders (for incoming sell order)
- * Maps to JAX _match_against_bid_orders (JaxOrderBookArrays.py:115-118)
- * 
- * Iteratively matches against best bid until:
- * - No more quantity to match (qtm_remaining <= 0)
- * - No more matching bids (price < limit_price)
- * - No more bid orders available
+ * All lanes participate in finding best, lane 0 executes match
  */
-__device__ void match_against_bids_device(
+__device__ void match_against_bids_warp(
     Order* asks,
     Order* bids,
     Trade* trades,
     const Message& msg,
     int n_orders,
-    int n_trades
+    int n_trades,
+    int laneId
 ) {
-    __shared__ int32_t shared_qtm_remaining;
-    __shared__ int shared_top_idx;
-    __shared__ int shared_can_continue;
-
     int32_t qtm_remaining = msg.quantity;
     int32_t limit_price = msg.price;
 
-    if (threadIdx.x == 0) {
-        shared_qtm_remaining = qtm_remaining;
-    }
-    __syncthreads();
-
     while (true) {
-        int current_remaining = shared_qtm_remaining;
-        if (current_remaining <= 0) break;
+        // Broadcast current remaining qty to all lanes
+        qtm_remaining = __shfl_sync(0xFFFFFFFF, qtm_remaining, 0);
+        if (qtm_remaining <= 0) break;
 
-        // TEAM OPERATION: All threads collaborate to find the best bid
-        int top_bid_idx = find_best_bid_parallel(bids, n_orders);
-        if (threadIdx.x == 0) {
-            shared_top_idx = top_bid_idx;
-        }
-        __syncthreads();
-        top_bid_idx = shared_top_idx;
+        // All lanes participate in finding best bid
+        int top_bid_idx = find_best_bid_warp(bids, n_orders, laneId);
 
-        // MANAGER OPERATION: Thread 0 checks if the match can proceed
-        if (threadIdx.x == 0) {
-            bool can_continue = !(top_bid_idx == -1 ||
-                                  bids[top_bid_idx].price == EMPTY_PRICE ||
-                                  bids[top_bid_idx].price < limit_price);
-            shared_can_continue = can_continue ? 1 : 0;
+        // Lane 0 checks if we can continue
+        bool can_continue = true;
+        if (laneId == 0) {
+            can_continue = !(top_bid_idx == -1 ||
+                           bids[top_bid_idx].price == EMPTY_PRICE ||
+                           bids[top_bid_idx].price < limit_price);
         }
-        __syncthreads();
-        if (!shared_can_continue) break;
         
-        // MANAGER OPERATION: Thread 0 performs the actual match and state update
-        if (threadIdx.x == 0) {
-            match_single_order_device(
-                top_bid_idx, bids, qtm_remaining, trades, n_trades,
-                msg.order_id, msg.time_sec, msg.time_ns, n_orders
-            );
-            shared_qtm_remaining = qtm_remaining;
-        }
-
-        // All threads must wait for the state update to be visible
-        __syncthreads();
+        // Broadcast decision to all lanes
+        can_continue = __shfl_sync(0xFFFFFFFF, can_continue ? 1 : 0, 0) != 0;
+        if (!can_continue) break;
+        
+        // Lane 0 performs the match
+        match_single_order_warp(
+            top_bid_idx, bids, qtm_remaining, trades, n_trades,
+            msg.order_id, msg.time_sec, msg.time_ns, n_orders, laneId
+        );
     }
 }
 
@@ -483,120 +399,102 @@ __device__ void match_against_bids_device(
 
 /**
  * Process a single message (add, cancel, or match)
- * Maps to JAX cond_type_side (JaxOrderBookArrays.py:181-206)
- * 
- * Dispatches to appropriate function based on message type and side
+ * All lanes participate in warp operations
  */
-__device__ void process_message_device(
+__device__ void process_message_warp(
     Order* asks,
     Order* bids,
     Trade* trades,
     const Message& msg,
     int n_orders,
-    int n_trades
+    int n_trades,
+    int laneId
 ) {
-    // Determine action based on type and side
-    // Type: 1=limit, 2=cancel, 3=delete, 4=market
-    // Side: -1=ask, 1=bid
-    
     if (msg.type == Message::CANCEL || msg.type == Message::DELETE) {
-        // Cancel order - only thread 0 modifies state
-        if (threadIdx.x == 0) {
-            if (msg.side == Message::ASK) {
-                cancel_order_device(asks, msg, n_orders);
-            } else if (msg.side == Message::BID) {
-                cancel_order_device(bids, msg, n_orders);
-            }
+        // Cancel order
+        if (msg.side == Message::ASK) {
+            cancel_order_warp(asks, msg, n_orders, laneId);
+        } else if (msg.side == Message::BID) {
+            cancel_order_warp(bids, msg, n_orders, laneId);
         }
-        // All threads must sync to ensure state changes are visible before next message
-        __syncthreads();
     }
     else if (msg.type == Message::LIMIT) {
-        // Limit order - ALL threads participate in matching, only thread 0 adds remainder
+        // Limit order
         if (msg.side == Message::ASK) {
             // Sell limit: match against bids, then add remainder
             
-            // Thread 0 counts initial bid volume at or above our price
-            __shared__ int32_t shared_matchable_qty;
-            if (threadIdx.x == 0) {
-                int32_t matchable_qty = 0;
+            // Lane 0 counts matchable quantity
+            int32_t matchable_qty = 0;
+            if (laneId == 0) {
                 for (int i = 0; i < n_orders; i++) {
                     if (bids[i].price != EMPTY_PRICE && bids[i].price >= msg.price) {
                         matchable_qty += bids[i].quantity;
                     }
                 }
-                shared_matchable_qty = matchable_qty;
             }
-            __syncthreads();
             
-            // ALL THREADS participate in matching
-            match_against_bids_device(asks, bids, trades, msg, n_orders, n_trades);
+            // Broadcast to all lanes
+            matchable_qty = __shfl_sync(0xFFFFFFFF, matchable_qty, 0);
             
-            // Only thread 0 adds remainder
-            if (threadIdx.x == 0) {
-                // Calculate remaining quantity (what wasn't matched)
-                int32_t remaining = msg.quantity - shared_matchable_qty;
+            // All lanes participate in matching
+            match_against_bids_warp(asks, bids, trades, msg, n_orders, n_trades, laneId);
+            
+            // Lane 0 adds remainder
+            if (laneId == 0) {
+                int32_t remaining = msg.quantity - matchable_qty;
                 if (remaining < 0) remaining = 0;
                 
-                // Only add if there's remaining quantity
                 if (remaining > 0) {
                     Message remaining_msg = msg;
                     remaining_msg.quantity = remaining;
-                    add_order_device(asks, remaining_msg, n_orders);
+                    add_order_warp(asks, remaining_msg, n_orders, 0);
                 }
             }
-            // All threads sync to ensure add_order completes before next message
-            __syncthreads();
         } else if (msg.side == Message::BID) {
             // Buy limit: match against asks, then add remainder
             
-            // Thread 0 counts initial ask volume at or below our price
-            __shared__ int32_t shared_matchable_qty;
-            if (threadIdx.x == 0) {
-                int32_t matchable_qty = 0;
+            // Lane 0 counts matchable quantity
+            int32_t matchable_qty = 0;
+            if (laneId == 0) {
                 for (int i = 0; i < n_orders; i++) {
                     if (asks[i].price != EMPTY_PRICE && asks[i].price <= msg.price) {
                         matchable_qty += asks[i].quantity;
                     }
                 }
-                shared_matchable_qty = matchable_qty;
             }
-            __syncthreads();
             
-            // ALL THREADS participate in matching
-            match_against_asks_device(asks, bids, trades, msg, n_orders, n_trades);
+            // Broadcast to all lanes
+            matchable_qty = __shfl_sync(0xFFFFFFFF, matchable_qty, 0);
             
-            // Only thread 0 adds remainder
-            if (threadIdx.x == 0) {
-                // Calculate remaining quantity (what wasn't matched)
-                int32_t remaining = msg.quantity - shared_matchable_qty;
+            // All lanes participate in matching
+            match_against_asks_warp(asks, bids, trades, msg, n_orders, n_trades, laneId);
+            
+            // Lane 0 adds remainder
+            if (laneId == 0) {
+                int32_t remaining = msg.quantity - matchable_qty;
                 if (remaining < 0) remaining = 0;
                 
-                // Only add if there's remaining quantity
                 if (remaining > 0) {
                     Message remaining_msg = msg;
                     remaining_msg.quantity = remaining;
-                    add_order_device(bids, remaining_msg, n_orders);
+                    add_order_warp(bids, remaining_msg, n_orders, 0);
                 }
             }
-            // All threads sync to ensure add_order completes before next message
-            __syncthreads();
         }
     }
     else if (msg.type == Message::MARKET) {
-        // Market order - aggressive matching only (no remainder added)
+        // Market order
         Message match_msg = msg;
         if (msg.side == Message::BID) {
-            // Buy market: match against asks at any price
-            match_msg.price = MAX_INT;  // Will match any ask price
-            match_against_asks_device(asks, bids, trades, match_msg, n_orders, n_trades);
+            // Buy market: match against asks
+            match_msg.price = MAX_INT;
+            match_against_asks_warp(asks, bids, trades, match_msg, n_orders, n_trades, laneId);
         } else if (msg.side == Message::ASK) {
-            // Sell market: match against bids at any price
-            match_msg.price = 0;  // Will match any bid price
-            match_against_bids_device(asks, bids, trades, match_msg, n_orders, n_trades);
+            // Sell market: match against bids
+            match_msg.price = 0;
+            match_against_bids_warp(asks, bids, trades, match_msg, n_orders, n_trades, laneId);
         }
     }
 }
 
 } // namespace cuda_orderbook
-

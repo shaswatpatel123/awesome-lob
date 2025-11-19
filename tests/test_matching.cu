@@ -133,8 +133,12 @@ public:
     }
     
     void init() {
-        dim3 grid(num_books);
-        dim3 block(256);
+        // Warp-level: 1 LOB per warp, 4 warps per block = 128 threads
+        int warps_per_block = 4;
+        int books_per_block = warps_per_block;
+        int num_blocks = (num_books + books_per_block - 1) / books_per_block;
+        dim3 grid(num_blocks);
+        dim3 block(128);
         init_orderbooks_kernel<<<grid, block>>>(batch, num_books);
         CUDA_CHECK(cudaDeviceSynchronize());
     }
@@ -147,9 +151,12 @@ public:
                              num_messages * sizeof(Message), 
                              cudaMemcpyHostToDevice));
         
-        // Process
-        dim3 grid(num_books);
-        dim3 block(256);
+        // Warp-level: 1 LOB per warp, 4 warps per block = 128 threads
+        int warps_per_block = 4;
+        int books_per_block = warps_per_block;
+        int num_blocks = (num_books + books_per_block - 1) / books_per_block;
+        dim3 grid(num_blocks);
+        dim3 block(128);
         process_messages_sequential_kernel<<<grid, block>>>(
             batch, d_messages, num_messages, num_books
         );

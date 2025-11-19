@@ -142,8 +142,176 @@ void init_orderbooks_host(OrderbookBatch& batch) {
 }
 
 void init_orderbooks_device(const OrderbookBatch& batch) {
-    init_orderbooks_kernel<<<1, 256>>>(batch, batch.num_books);
+    dim3 grid_dim, block_dim;
+    calculate_launch_config(batch.num_books, grid_dim, block_dim);
+    init_orderbooks_kernel<<<grid_dim, block_dim>>>(batch, batch.num_books);
     cudaDeviceSynchronize();
+}
+
+void calculate_launch_config(
+    int num_books,
+    dim3& grid_dim,
+    dim3& block_dim
+) {
+    // Warp-level parallelism: 1 LOB per warp (32 threads)
+    // Use 4 warps per block = 128 threads per block
+    constexpr int WARP_SIZE = 32;
+    constexpr int WARPS_PER_BLOCK = 4;
+    constexpr int THREADS_PER_BLOCK = WARP_SIZE * WARPS_PER_BLOCK;
+    
+    int books_per_block = WARPS_PER_BLOCK;
+    int num_blocks = (num_books + books_per_block - 1) / books_per_block;
+    
+    grid_dim = dim3(num_blocks, 1, 1);
+    block_dim = dim3(THREADS_PER_BLOCK, 1, 1);
+}
+
+void print_device_info() {
+    int deviceCount;
+    cudaGetDeviceCount(&deviceCount);
+    
+    if (deviceCount == 0) {
+        printf("No CUDA devices found!\n");
+        return;
+    }
+    
+    for (int dev = 0; dev < deviceCount; dev++) {
+        cudaDeviceProp prop;
+        cudaGetDeviceProperties(&prop, dev);
+        
+        printf("Device %d: %s\n", dev, prop.name);
+        printf("  Compute Capability: %d.%d\n", prop.major, prop.minor);
+        printf("  Total Global Memory: %.2f GB\n", prop.totalGlobalMem / (1024.0*1024.0*1024.0));
+        printf("  Shared Memory per Block: %.2f KB\n", prop.sharedMemPerBlock / 1024.0);
+        printf("  Registers per Block: %d\n", prop.regsPerBlock);
+        printf("  Warp Size: %d\n", prop.warpSize);
+        printf("  Max Threads per Block: %d\n", prop.maxThreadsPerBlock);
+        printf("  Max Threads per SM: %d\n", prop.maxThreadsPerMultiProcessor);
+        printf("  Number of SMs: %d\n", prop.multiProcessorCount);
+    }
+}
+
+void print_orderbook(
+    const OrderbookBatch& batch,
+    int book_idx,
+    int max_orders
+) {
+    if (book_idx < 0 || book_idx >= batch.num_books) {
+        printf("Invalid book index: %d\n", book_idx);
+        return;
+    }
+    
+    printf("=== Orderbook %d ===\n", book_idx);
+    printf("Asks:\n");
+    
+    Order* book_asks = batch.h_asks + (book_idx * batch.n_orders_per_book);
+    Order* book_bids = batch.h_bids + (book_idx * batch.n_orders_per_book);
+    
+    int count = 0;
+    for (int i = 0; i < batch.n_orders_per_book && count < max_orders; i++) {
+        if (book_asks[i].price != EMPTY_PRICE) {
+            printf("  [%d] Price: %d, Qty: %d, ID: %d\n",
+                   i, book_asks[i].price, book_asks[i].quantity, book_asks[i].order_id);
+            count++;
+        }
+    }
+    
+    printf("Bids:\n");
+    count = 0;
+    for (int i = 0; i < batch.n_orders_per_book && count < max_orders; i++) {
+        if (book_bids[i].price != EMPTY_PRICE) {
+            printf("  [%d] Price: %d, Qty: %d, ID: %d\n",
+                   i, book_bids[i].price, book_bids[i].quantity, book_bids[i].order_id);
+            count++;
+        }
+    }
+}
+
+bool validate_orderbook(
+    const OrderbookBatch& batch,
+    int book_idx
+) {
+    if (book_idx < 0 || book_idx >= batch.num_books) {
+        return false;
+    }
+    
+    Order* book_asks = batch.h_asks + (book_idx * batch.n_orders_per_book);
+    Order* book_bids = batch.h_bids + (book_idx * batch.n_orders_per_book);
+    
+    // Check asks
+    for (int i = 0; i < batch.n_orders_per_book; i++) {
+        if (book_asks[i].price != EMPTY_PRICE) {
+            if (book_asks[i].quantity <= 0) {
+                printf("Invalid ask at index %d: negative/zero quantity\n", i);
+                return false;
+            }
+            if (book_asks[i].price < 0) {
+                printf("Invalid ask at index %d: negative price\n", i);
+                return false;
+            }
+        }
+    }
+    
+    // Check bids
+    for (int i = 0; i < batch.n_orders_per_book; i++) {
+        if (book_bids[i].price != EMPTY_PRICE) {
+            if (book_bids[i].quantity <= 0) {
+                printf("Invalid bid at index %d: negative/zero quantity\n", i);
+                return false;
+            }
+            if (book_bids[i].price < 0) {
+                printf("Invalid bid at index %d: negative price\n", i);
+                return false;
+            }
+        }
+    }
+    
+    return true;
+}
+
+// ============================================================================
+// DEVICE UTILITY FUNCTIONS
+// ============================================================================
+
+__device__ int find_empty_slot(const Order* orders, int n_orders) {
+    for (int i = 0; i < n_orders; i++) {
+        if (orders[i].price == EMPTY_PRICE) {
+            return i;
+        }
+    }
+    return -1;
+}
+
+__device__ int find_order_by_id(
+    const Order* orders,
+    int n_orders,
+    int32_t order_id
+) {
+    for (int i = 0; i < n_orders; i++) {
+        if (orders[i].order_id == order_id) {
+            return i;
+        }
+    }
+    return -1;
+}
+
+__device__ int find_order_by_price(
+    const Order* orders,
+    int n_orders,
+    int32_t price
+) {
+    for (int i = 0; i < n_orders; i++) {
+        if (orders[i].price == price) {
+            return i;
+        }
+    }
+    return -1;
+}
+
+__device__ bool has_time_priority(const Order& order1, const Order& order2) {
+    if (order1.time_sec < order2.time_sec) return true;
+    if (order1.time_sec > order2.time_sec) return false;
+    return order1.time_ns < order2.time_ns;
 }
 
 } // namespace cuda_orderbook

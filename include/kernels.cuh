@@ -11,7 +11,7 @@ namespace cuda_orderbook {
 
 /**
  * Add orders to orderbooks in batch
- * Each thread block processes one orderbook
+ * Each warp processes one orderbook
  * Maps to JAX add_order (JaxOrderBookArrays.py:32-37)
  * 
  * @param batch Batch of orderbooks
@@ -26,7 +26,7 @@ __global__ void add_order_batch_kernel(
 
 /**
  * Cancel orders from orderbooks in batch
- * Each thread block processes one orderbook
+ * Each warp processes one orderbook
  * Maps to JAX cancel_order (JaxOrderBookArrays.py:52-65)
  * 
  * @param batch Batch of orderbooks
@@ -45,7 +45,7 @@ __global__ void cancel_order_batch_kernel(
 
 /**
  * Match orders in batch (limit and market orders)
- * Each thread block processes one orderbook
+ * Each warp processes one orderbook
  * Maps to JAX _match_against_bid_orders and _match_against_ask_orders
  * (JaxOrderBookArrays.py:115-130)
  * 
@@ -62,7 +62,7 @@ __global__ void match_order_batch_kernel(
 /**
  * Process array of messages sequentially for each orderbook in parallel
  * THIS IS THE MAIN KERNEL - Entry point for message processing
- * Each thread block processes ALL messages for ONE orderbook sequentially
+ * Each warp processes ALL messages for ONE orderbook sequentially
  * Maps to JAX scan_through_entire_array (JaxOrderBookArrays.py:265-267)
  * 
  * @param batch Batch of orderbooks
@@ -83,7 +83,7 @@ __global__ void process_messages_sequential_kernel(
 
 /**
  * Get best bid and ask for all orderbooks in batch
- * Parallel reduction within each thread block
+ * Parallel reduction within each warp
  * Maps to JAX get_best_ask (line 430) and get_best_bid (line 436)
  * 
  * @param batch Batch of orderbooks
@@ -155,6 +155,7 @@ __global__ void get_best_bid_ask_with_qty_kernel(
 
 /**
  * Initialize orderbooks to empty state
+ * Each warp initializes one orderbook
  * All prices set to EMPTY_PRICE (-1)
  * 
  * @param batch Batch of orderbooks to initialize
