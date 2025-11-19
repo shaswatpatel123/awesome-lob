@@ -23,11 +23,16 @@ OPERATIONS_BENCHMARK_SOURCE = benchmark_operations.cu
 # Output
 BENCHMARK_BIN = benchmark_cpu_vs_gpu
 OPERATIONS_BIN = benchmark_operations
+OPERATIONS_CPU_BIN = benchmark_operations_cpu
+
+# C++ compiler settings
+CXX = g++
+CXX_FLAGS = -std=c++14 -I../include -Wall
 
 # Targets
-.PHONY: all clean run help operations
+.PHONY: all clean run help operations operations-cpu
 
-all: $(BENCHMARK_BIN) $(OPERATIONS_BIN)
+all: $(BENCHMARK_BIN) $(OPERATIONS_BIN) $(OPERATIONS_CPU_BIN)
 
 $(BENCHMARK_BIN): $(BENCHMARK_SOURCE) $(CPU_SOURCES) $(CUDA_SOURCES)
 	@echo "Compiling CPU vs GPU benchmark..."
@@ -46,11 +51,21 @@ $(OPERATIONS_BIN): $(OPERATIONS_BENCHMARK_SOURCE) $(CUDA_SOURCES)
 		-o $(OPERATIONS_BIN)
 	@echo "Build complete: $(OPERATIONS_BIN)"
 
+$(OPERATIONS_CPU_BIN): benchmark_operations_cpu.cpp $(CPU_SOURCES)
+	@echo "Compiling CPU operations timing benchmark..."
+	$(CXX) $(CXX_FLAGS) -O3 \
+		benchmark_operations_cpu.cpp \
+		$(CPU_SOURCES) \
+		-o $(OPERATIONS_CPU_BIN)
+	@echo "Build complete: $(OPERATIONS_CPU_BIN)"
+
 operations: $(OPERATIONS_BIN)
+
+operations-cpu: $(OPERATIONS_CPU_BIN)
 
 clean:
 	@echo "Cleaning..."
-	rm -f $(BENCHMARK_BIN) $(OPERATIONS_BIN)
+	rm -f $(BENCHMARK_BIN) $(OPERATIONS_BIN) $(OPERATIONS_CPU_BIN)
 	@echo "Clean complete"
 
 run: $(BENCHMARK_BIN)
@@ -85,6 +100,22 @@ run-ops-large: $(OPERATIONS_BIN)
 	@echo "Running operation timing benchmark (large: 1000 books, 10000 msgs)..."
 	./$(OPERATIONS_BIN) 1000 10000
 
+run-ops-cpu: $(OPERATIONS_CPU_BIN)
+	@echo "Running CPU operation timing benchmark with default parameters..."
+	./$(OPERATIONS_CPU_BIN)
+
+run-ops-cpu-small: $(OPERATIONS_CPU_BIN)
+	@echo "Running CPU operation timing benchmark (small: 10 books, 100 msgs)..."
+	./$(OPERATIONS_CPU_BIN) 10 100
+
+run-ops-cpu-medium: $(OPERATIONS_CPU_BIN)
+	@echo "Running CPU operation timing benchmark (medium: 100 books, 1000 msgs)..."
+	./$(OPERATIONS_CPU_BIN) 100 1000
+
+run-ops-cpu-large: $(OPERATIONS_CPU_BIN)
+	@echo "Running CPU operation timing benchmark (large: 1000 books, 10000 msgs)..."
+	./$(OPERATIONS_CPU_BIN) 1000 10000
+
 profile: $(BENCHMARK_BIN)
 	@echo "Profiling with nvprof..."
 	nvprof ./$(BENCHMARK_BIN) 100 1000 100 100
@@ -102,7 +133,8 @@ help:
 	@echo ""
 	@echo "BUILD:"
 	@echo "  make              - Build all benchmarks"
-	@echo "  make operations   - Build operations timing benchmark only"
+	@echo "  make operations   - Build GPU operations timing benchmark"
+	@echo "  make operations-cpu - Build CPU operations timing benchmark"
 	@echo "  make clean        - Remove build artifacts"
 	@echo ""
 	@echo "CPU vs GPU BENCHMARK:"
@@ -111,11 +143,17 @@ help:
 	@echo "  make run-medium   - Run medium workload"
 	@echo "  make run-large    - Run large workload"
 	@echo ""
-	@echo "OPERATION TIMING BENCHMARK:"
-	@echo "  make run-ops        - Run operation timing (default: 100 books, 1000 msgs)"
-	@echo "  make run-ops-small  - Run operation timing (10 books, 100 msgs)"
-	@echo "  make run-ops-medium - Run operation timing (100 books, 1000 msgs)"
-	@echo "  make run-ops-large  - Run operation timing (1000 books, 10000 msgs)"
+	@echo "GPU OPERATION TIMING BENCHMARK:"
+	@echo "  make run-ops        - Run GPU operation timing (default: 100 books, 1000 msgs)"
+	@echo "  make run-ops-small  - Run GPU operation timing (10 books, 100 msgs)"
+	@echo "  make run-ops-medium - Run GPU operation timing (100 books, 1000 msgs)"
+	@echo "  make run-ops-large  - Run GPU operation timing (1000 books, 10000 msgs)"
+	@echo ""
+	@echo "CPU OPERATION TIMING BENCHMARK:"
+	@echo "  make run-ops-cpu        - Run CPU operation timing (default: 100 books, 1000 msgs)"
+	@echo "  make run-ops-cpu-small  - Run CPU operation timing (10 books, 100 msgs)"
+	@echo "  make run-ops-cpu-medium - Run CPU operation timing (100 books, 1000 msgs)"
+	@echo "  make run-ops-cpu-large  - Run CPU operation timing (1000 books, 10000 msgs)"
 	@echo ""
 	@echo "PROFILING:"
 	@echo "  make profile      - Profile with nvprof"
@@ -125,6 +163,7 @@ help:
 	@echo "Custom parameters:"
 	@echo "  ./$(BENCHMARK_BIN) <num_books> <msgs_per_book> <orders_per_side> <max_trades>"
 	@echo "  ./$(OPERATIONS_BIN) <num_books> <msgs_per_book>"
+	@echo "  ./$(OPERATIONS_CPU_BIN) <num_books> <msgs_per_book>"
 	@echo ""
 	@echo "GPU Architecture:"
 	@echo "  Current: $(GPU_ARCH)"

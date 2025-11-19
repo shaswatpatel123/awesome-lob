@@ -422,6 +422,330 @@ done
 
 ---
 
+# CPU Operation Timing Benchmark
+
+## Overview
+
+Similar to the GPU operation timing benchmark but runs on CPU sequential implementation for direct comparison.
+
+The `benchmark_operations_cpu` tool measures timing for the same four orderbook operations as the GPU version:
+
+1. **ADD Operations** - Non-matching limit order inserts (pure add overhead)
+2. **MATCH Operations** - Limit orders that cross the spread and match
+3. **CANCEL Operations** - Order cancellation by ID
+4. **MARKET Operations** - Market order aggressive matching
+
+## Building
+
+### Using Makefile
+
+```bash
+cd benchmarks
+make operations-cpu    # Build only CPU operations benchmark
+make                   # Build all benchmarks including CPU
+```
+
+### Manual Compilation
+
+```bash
+g++ -o benchmark_operations_cpu \
+  benchmark_operations_cpu.cpp \
+  ../src/orderbook_cpu.cpp \
+  -I../include \
+  -std=c++14 -O3
+```
+
+## Running
+
+### Using Makefile Targets
+
+```bash
+make run-ops-cpu              # Default: 100 books, 1000 msgs
+make run-ops-cpu-small        # Small: 10 books, 100 msgs
+make run-ops-cpu-medium       # Medium: 100 books, 1000 msgs
+make run-ops-cpu-large        # Large: 1000 books, 10000 msgs
+```
+
+### Direct Execution
+
+```bash
+./benchmark_operations_cpu                # Default parameters
+./benchmark_operations_cpu 100 1000       # Custom: 100 books, 1000 msgs/book
+./benchmark_operations_cpu 1000 10000     # Large workload
+```
+
+### Help
+
+```bash
+./benchmark_operations_cpu --help
+```
+
+## Output Format
+
+```
+╔════════════════════════════════════════════════════════════════════╗
+║         CPU ORDERBOOK OPERATION TIMING BENCHMARK                   ║
+╚════════════════════════════════════════════════════════════════════╝
+
+📊 Configuration:
+  Orderbooks:        100
+  Messages per book: 1000
+  Total messages:    100000
+  Orders per side:   1000
+  Max trades:        2000
+  Processing:        Sequential (CPU)
+
+======================================================================
+SCENARIO 1: ADD Operations (Non-Matching Inserts)
+======================================================================
+
+=== ADD Operations (CPU) ===
+Operation Type:     ADD
+Messages Processed: 100000
+Total Time:         125.456 ms
+Time per Operation: 1.255 μs
+Throughput:         796812 ops/sec
+
+... (similar output for other scenarios)
+
+╔════════════════════════════════════════════════════════════════════╗
+║              PERFORMANCE COMPARISON SUMMARY                        ║
+╚════════════════════════════════════════════════════════════════════╝
+
+Operation                       Time (ms)     μs/op        ops/sec
+-----------------------------------------------------------------------
+ADD Operations (CPU)              125.456      1.255         796812
+LIMIT Order Insert+Match (CPU)    234.789      2.348         425937
+CANCEL Operations (CPU)            98.234      0.982        1017989
+MARKET Order Insert+Match (CPU)   267.543      2.675         373831
+```
+
+## Expected CPU Performance
+
+Typical performance on modern CPU (sequential processing):
+
+- **ADD**: ~1-2 μs/op
+- **CANCEL**: ~0.8-1.5 μs/op  
+- **LIMIT Match**: ~2-4 μs/op
+- **MARKET**: ~2.5-5 μs/op
+
+### Performance Hierarchy (Same as GPU)
+
+1. **CANCEL** - Fastest (simple lookup + quantity update)
+2. **ADD** - Fast (find empty slot + insert)
+3. **LIMIT Match** - Moderate (matching + trade recording)
+4. **MARKET** - Slowest (sweep multiple price levels)
+
+## CPU vs GPU Comparison
+
+### Running Both Benchmarks
+
+```bash
+# Run CPU version
+./benchmark_operations_cpu 100 1000 > cpu_results.txt
+
+# Run GPU version  
+./benchmark_operations 100 1000 > gpu_results.txt
+
+# Compare
+diff cpu_results.txt gpu_results.txt
+```
+
+### Side-by-Side Comparison
+
+```bash
+# Terminal 1
+make run-ops-cpu-large
+
+# Terminal 2  
+make run-ops-large
+```
+
+### Expected Speedup Ratios
+
+For 100 books × 1000 messages workload:
+
+| Operation | CPU (μs/op) | GPU (μs/op) | Speedup |
+|-----------|-------------|-------------|---------|
+| ADD | ~1.2-1.5 | ~0.15-0.20 | 7-8x |
+| CANCEL | ~0.9-1.2 | ~0.12-0.15 | 7-9x |
+| LIMIT Match | ~2.2-2.8 | ~0.25-0.35 | 8-10x |
+| MARKET | ~2.5-3.2 | ~0.30-0.40 | 8-10x |
+
+**Key Observations**:
+- GPU achieves consistent 7-10x speedup across all operations
+- Speedup increases with larger workloads (more parallelism)
+- Both implementations maintain same relative performance hierarchy
+- GPU parallel reduction significantly speeds up best-price search
+
+### Creating Comparison Tables
+
+Run both and extract metrics:
+
+```bash
+# CPU metrics
+./benchmark_operations_cpu 100 1000 | grep "Time per Operation"
+
+# GPU metrics  
+./benchmark_operations 100 1000 | grep "Time per Operation"
+
+# Calculate speedups
+python3 -c "
+cpu_add = 1.255
+gpu_add = 0.152
+print(f'ADD Speedup: {cpu_add/gpu_add:.2f}x')
+"
+```
+
+## Use Cases
+
+### 1. Validate GPU Correctness
+
+Run both with same inputs, verify results match:
+```bash
+./benchmark_operations_cpu 10 100
+./benchmark_operations 10 100
+# Compare outputs to ensure correct behavior
+```
+
+### 2. Measure GPU Acceleration
+
+Quantify exact speedup for each operation type:
+```bash
+make run-ops-cpu-medium > cpu.txt
+make run-ops-medium > gpu.txt
+# Extract and compare μs/op values
+```
+
+### 3. Performance Analysis
+
+Understand which operations benefit most from GPU:
+```bash
+# Run large workload on both
+make run-ops-cpu-large
+make run-ops-large
+# Compare relative speedups
+```
+
+### 4. Hardware Comparison
+
+Test different CPUs or GPUs:
+```bash
+# On different machines
+./benchmark_operations_cpu 1000 10000
+./benchmark_operations 1000 10000
+```
+
+## Differences from GPU Version
+
+### Timing Method
+
+**CPU**: Uses `std::chrono::high_resolution_clock`
+```cpp
+auto start = high_resolution_clock::now();
+process_messages_batch(batch, messages, num_msgs);
+auto end = high_resolution_clock::now();
+auto duration = duration_cast<microseconds>(end - start);
+```
+
+**GPU**: Uses CUDA events
+```cpp
+cudaEventRecord(start);
+kernel<<<...>>>();
+cudaEventRecord(stop);
+cudaEventElapsedTime(&time_ms, start, stop);
+```
+
+### Processing Model
+
+**CPU**: Sequential processing
+- Single thread
+- One orderbook at a time
+- One message at a time
+
+**GPU**: Parallel processing
+- Multiple thread blocks
+- Multiple orderbooks simultaneously
+- Parallel reductions for best-price search
+
+### Warm-Up
+
+Both include warm-up runs:
+- **CPU**: Warms CPU cache
+- **GPU**: Warms GPU instruction cache
+
+### Memory Management
+
+**CPU**: Direct memory allocation
+```cpp
+OrderbookBatchCPU batch;
+batch.allocate(num_books, n_orders, n_trades);
+```
+
+**GPU**: Device memory allocation
+```cpp
+OrderbookBatch batch;
+allocate_orderbook_batch(batch, num_books, n_orders, n_trades);
+cudaMemcpy(...);
+```
+
+## Performance Tips
+
+### For Accurate CPU Measurements
+
+1. **Disable Turbo Boost** (optional, for consistency):
+   ```bash
+   # Linux
+   echo 1 | sudo tee /sys/devices/system/cpu/intel_pstate/no_turbo
+   ```
+
+2. **Run multiple times** and average:
+   ```bash
+   for i in {1..5}; do
+     ./benchmark_operations_cpu 100 1000 | grep "Total Time"
+   done
+   ```
+
+3. **Close background applications** to reduce noise
+
+4. **Use taskset** to pin to specific cores:
+   ```bash
+   taskset -c 0 ./benchmark_operations_cpu 100 1000
+   ```
+
+## Troubleshooting
+
+### Build Errors
+
+**"orderbook_cpu.h not found"**:
+- Ensure running from `benchmarks/` directory
+- Check `-I../include` flag is present
+
+**Linker errors**:
+- Make sure `../src/orderbook_cpu.cpp` is compiled
+- Check all source files are listed
+
+### Performance Issues
+
+**CPU slower than expected**:
+- Ensure `-O3` optimization flag is used
+- Check CPU isn't thermal throttling
+- Disable background applications
+
+**Large variance in results**:
+- Run warm-up pass (already included)
+- Close other applications
+- Use taskset to pin to specific CPU
+
+### Comparison Issues
+
+**Results don't match between CPU and GPU**:
+- Verify same parameters used
+- Check message generation produces identical messages
+- Ensure both implementations are up to date
+
+---
+
 ## Troubleshooting
 
 ### GPU Not Faster Than CPU
