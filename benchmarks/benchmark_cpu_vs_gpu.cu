@@ -154,16 +154,52 @@ double benchmark_gpu(
         num_books
     );
     
+    // Check for kernel launch errors
+    cudaError_t err = cudaGetLastError();
+    if (err != cudaSuccess) {
+        std::cerr << "CUDA Kernel Error: " << cudaGetErrorString(err) << std::endl;
+        cudaFree(d_messages);
+        free_orderbook_batch(gpu_batch);
+        free_host_orderbook_batch(gpu_batch);
+        return -1.0;
+    }
+    
     cudaEventRecord(stop);
     cudaEventSynchronize(stop);
     
+    // Check for synchronization errors
+    err = cudaGetLastError();
+    if (err != cudaSuccess) {
+        std::cerr << "CUDA Sync Error: " << cudaGetErrorString(err) << std::endl;
+        cudaFree(d_messages);
+        free_orderbook_batch(gpu_batch);
+        free_host_orderbook_batch(gpu_batch);
+        return -1.0;
+    }
+    
     float time_ms = 0;
     cudaEventElapsedTime(&time_ms, start, stop);
+    
+    // Verify GPU actually processed data (sample check)
+    if (num_books == 1) {
+        Order sample_order;
+        CHECK_CUDA_ERROR(cudaMemcpy(&sample_order, gpu_batch.d_bids, sizeof(Order), cudaMemcpyDeviceToHost));
+        if (sample_order.price == 0 && sample_order.quantity == 0 && sample_order.order_id == 0) {
+            std::cerr << "WARNING: GPU results appear to be uninitialized (all zeros)!" << std::endl;
+            std::cerr << "This suggests the kernel may not have executed correctly." << std::endl;
+        }
+    }
     
     std::cout << "GPU Time: " << time_ms << " ms" << std::endl;
     std::cout << "GPU Throughput: " 
               << (num_books * num_messages_per_book) / time_ms * 1000.0 
               << " messages/sec" << std::endl;
+    
+    // Warn if time seems suspiciously low
+    if (time_ms < 0.01 && (num_books * num_messages_per_book) > 100) {
+        std::cerr << "WARNING: GPU time is suspiciously low. " << std::endl;
+        std::cerr << "This may indicate the kernel did not execute properly." << std::endl;
+    }
     
     // Cleanup
     cudaFree(d_messages);
