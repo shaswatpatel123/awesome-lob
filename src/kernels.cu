@@ -15,11 +15,11 @@
 
 // Forward declare device functions from operations.cu
 namespace cuda_orderbook {
-    __device__ void add_order_device(Order* orderside, const Message& msg, int n_orders);
-    __device__ void cancel_order_device(Order* orderside, const Message& msg, int n_orders);
-    __device__ void match_against_asks_device(Order* asks, Order* bids, Trade* trades, const Message& msg, int n_orders, int n_trades);
-    __device__ void match_against_bids_device(Order* asks, Order* bids, Trade* trades, const Message& msg, int n_orders, int n_trades);
-    __device__ void process_message_device(Order* asks, Order* bids, Trade* trades, const Message& msg, int n_orders, int n_trades);
+    __device__ void add_order_device(const OrderbookState& state, bool is_ask_side, const Message& msg);
+    __device__ void cancel_order_device(const OrderbookState& state, bool is_ask_side, const Message& msg);
+    __device__ void match_against_asks_device(const OrderbookState& state, const Message& msg);
+    __device__ void match_against_bids_device(const OrderbookState& state, const Message& msg);
+    __device__ void process_message_device(const OrderbookState& state, const Message& msg);
 }
 
 namespace cuda_orderbook {
