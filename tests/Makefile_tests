@@ -3,7 +3,7 @@
 # Compiler settings
 NVCC = nvcc
 NVCC_FLAGS = -std=c++14 -O2 -I../include --compiler-options -Wall -rdc=true
-GPU_ARCH = sm_52
+GPU_ARCH = sm_75
 
 # Source files
 CPU_SOURCES = ../src/orderbook_cpu.cpp data_generator.cpp
@@ -45,5 +45,11 @@ help:
 	@echo ""
 	@echo "GPU Architecture:"
 	@echo "  Current: $(GPU_ARCH)"
-	@echo "  Change with: make GPU_ARCH=sm_86"
+	@echo "  To detect your GPU architecture, run: nvidia-smi --query-gpu=compute_cap --format=csv,noheader"
+	@echo "  Common architectures:"
+	@echo "    sm_75  - Turing (RTX 20xx, T4)"
+	@echo "    sm_80  - Ampere (A100, RTX 30xx)"
+	@echo "    sm_86  - Ampere (RTX 30xx)"
+	@echo "    sm_89  - Ada (RTX 40xx)"
+	@echo "  Change with: make GPU_ARCH=sm_80"
 

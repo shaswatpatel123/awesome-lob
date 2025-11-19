@@ -404,9 +404,6 @@ __device__ void process_message_device(
         if (msg.side == Message::ASK) {
             // Sell limit: match against bids, then add remainder
             
-            // Track quantity before matching
-            int32_t initial_qty = msg.quantity;
-            
             // Match against bids (this will consume what it can)
             // We need to track how much was actually matched
             int32_t qtm_remaining = msg.quantity;
@@ -436,9 +433,6 @@ __device__ void process_message_device(
             }
         } else if (msg.side == Message::BID) {
             // Buy limit: match against asks, then add remainder
-            
-            // Track quantity before matching
-            int32_t initial_qty = msg.quantity;
             
             // Match against asks (this will consume what it can)
             // We need to track how much was actually matched
