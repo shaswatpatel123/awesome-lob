@@ -213,6 +213,7 @@ bool unit_test_cancel_order(TestStats& stats) {
     dim3 grid((1 + 255) / 256);
     dim3 block(256);
     process_messages_sequential_kernel<<<grid, block>>>(gpu_batch, d_msgs, messages.size(), 1);
+    CUDA_CHECK(cudaGetLastError());
     CUDA_CHECK(cudaDeviceSynchronize());
     
     // Copy and compare
@@ -287,6 +288,7 @@ bool unit_test_simple_match(TestStats& stats) {
     dim3 grid((1 + 255) / 256);
     dim3 block(256);
     process_messages_sequential_kernel<<<grid, block>>>(gpu_batch, d_msgs, messages.size(), 1);
+    CUDA_CHECK(cudaGetLastError());
     CUDA_CHECK(cudaDeviceSynchronize());
     
     // Copy and compare
@@ -373,6 +375,7 @@ bool integration_test_scenario(TestStats& stats, const char* name,
     dim3 grid((1 + 255) / 256);
     dim3 block(256);
     process_messages_sequential_kernel<<<grid, block>>>(gpu_batch, d_msgs, messages.size(), 1);
+    CUDA_CHECK(cudaGetLastError());
     CUDA_CHECK(cudaDeviceSynchronize());
     
     // Copy and compare
@@ -461,22 +464,23 @@ bool functional_test_random(TestStats& stats, int num_messages, const char* size
     dim3 grid((1 + 255) / 256);
     dim3 block(256);
     process_messages_sequential_kernel<<<grid, block>>>(gpu_batch, d_msgs, messages.size(), 1);
+    CUDA_CHECK(cudaGetLastError());
     CUDA_CHECK(cudaDeviceSynchronize());
     auto gpu_end = std::chrono::high_resolution_clock::now();
     auto gpu_time = std::chrono::duration_cast<std::chrono::microseconds>(gpu_end - gpu_start).count();
     
     // Copy and compare
-    Order* gpu_asks = new Order[200];
-    Order* gpu_bids = new Order[200];
-    Trade* gpu_trades = new Trade[100];
+    Order* gpu_asks = new Order[n_orders];
+    Order* gpu_bids = new Order[n_orders];
+    Trade* gpu_trades = new Trade[n_trades];
     
-    CUDA_CHECK(cudaMemcpy(gpu_asks, gpu_batch.d_asks, 200 * sizeof(Order), cudaMemcpyDeviceToHost));
-    CUDA_CHECK(cudaMemcpy(gpu_bids, gpu_batch.d_bids, 200 * sizeof(Order), cudaMemcpyDeviceToHost));
-    CUDA_CHECK(cudaMemcpy(gpu_trades, gpu_batch.d_trades, 100 * sizeof(Trade), cudaMemcpyDeviceToHost));
+    CUDA_CHECK(cudaMemcpy(gpu_asks, gpu_batch.d_asks, n_orders * sizeof(Order), cudaMemcpyDeviceToHost));
+    CUDA_CHECK(cudaMemcpy(gpu_bids, gpu_batch.d_bids, n_orders * sizeof(Order), cudaMemcpyDeviceToHost));
+    CUDA_CHECK(cudaMemcpy(gpu_trades, gpu_batch.d_trades, n_trades * sizeof(Trade), cudaMemcpyDeviceToHost));
     
-    bool match = compare_orders(cpu_book.asks, gpu_asks, 200, "Asks") &&
-                 compare_orders(cpu_book.bids, gpu_bids, 200, "Bids") &&
-                 compare_trades(cpu_book.trades, gpu_trades, 100);
+    bool match = compare_orders(cpu_book.asks, gpu_asks, n_orders, "Asks") &&
+                 compare_orders(cpu_book.bids, gpu_bids, n_orders, "Bids") &&
+                 compare_trades(cpu_book.trades, gpu_trades, n_trades);
     
     std::cout << "  CPU time: " << cpu_time << " μs" << std::endl;
     std::cout << "  GPU time: " << gpu_time << " μs" << std::endl;
