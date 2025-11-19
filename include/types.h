@@ -237,7 +237,7 @@ struct OrderbookState {
     int32_t price_map_size;           // Size of price hash map
     int32_t order_id_map_size;        // Size of order-ID hash map
     
-    OrderbookState() 
+    __host__ __device__ OrderbookState() 
         : asks(nullptr), bids(nullptr), trades(nullptr),
           n_orders(0), n_trades(0),
           ask_metadata(nullptr), ask_buckets(nullptr), 

@@ -645,6 +645,7 @@ __device__ void add_order_to_bucket(
     
     PriceBucket& bucket = buckets[bucket_idx];
     OrderMetadata& meta = metadata[order_idx];
+    Order& order = orders[order_idx];
     
     meta.price_bucket_idx = bucket_idx;
     meta.is_valid = true;
