@@ -94,6 +94,7 @@ double benchmark_gpu(
     int num_messages_per_book,
     int n_orders_per_book,
     int n_trades_per_book,
+    int block_size,
     const std::vector<Message>& messages
 ) {
     std::cout << "\n=== GPU Benchmark ===" << std::endl;
@@ -128,8 +129,8 @@ double benchmark_gpu(
     
     // Warm-up run
     std::cout << "Warm-up run..." << std::endl;
-    dim3 grid((num_books + 255) / 256);
-    dim3 block(256);
+    dim3 grid((num_books + block_size - 1) / block_size);
+    dim3 block(block_size);
     process_messages_sequential_kernel<<<grid, block>>>(
         gpu_batch,
         d_messages,
@@ -147,6 +148,7 @@ double benchmark_gpu(
     
     cudaEventRecord(start);
     
+    // Use the same grid/block configuration for actual benchmark
     process_messages_sequential_kernel<<<grid, block>>>(
         gpu_batch,
         d_messages,
@@ -223,12 +225,21 @@ int main(int argc, char** argv) {
     int num_messages_per_book = (argc > 2) ? std::atoi(argv[2]) : 1000;
     int n_orders_per_book = (argc > 3) ? std::atoi(argv[3]) : 100;
     int n_trades_per_book = (argc > 4) ? std::atoi(argv[4]) : 100;
+    int block_size = (argc > 5) ? std::atoi(argv[5]) : 256;
+    
+    // Validate block size (must be power of 2 and within GPU limits)
+    if (block_size < 32 || block_size > 1024 || (block_size & (block_size - 1)) != 0) {
+        std::cerr << "Error: Block size must be a power of 2 between 32 and 1024" << std::endl;
+        std::cerr << "Common values: 32, 64, 128, 256, 512, 1024" << std::endl;
+        return 1;
+    }
     
     std::cout << "\nConfiguration:" << std::endl;
     std::cout << "  Number of orderbooks: " << num_books << std::endl;
     std::cout << "  Messages per orderbook: " << num_messages_per_book << std::endl;
     std::cout << "  Orders per side: " << n_orders_per_book << std::endl;
     std::cout << "  Max trades: " << n_trades_per_book << std::endl;
+    std::cout << "  Block size (threads per block): " << block_size << std::endl;
     std::cout << "  Total messages: " << num_books * num_messages_per_book << std::endl;
     
     // Generate test messages
@@ -250,6 +261,7 @@ int main(int argc, char** argv) {
         num_messages_per_book,
         n_orders_per_book,
         n_trades_per_book,
+        block_size,
         messages
     );
     
