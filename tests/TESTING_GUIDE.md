@@ -49,7 +49,7 @@ make -j$(nproc)
 
 # Step 2: Compile test
 cd ../tests
-nvcc -arch=sm_75 \
+nvcc -arch=sm_52 \
      -I../include \
      -L../build \
      -lcuda_orderbook \
@@ -57,6 +57,7 @@ nvcc -arch=sm_75 \
      -o test_matching
 
 # Note: Adjust -arch=sm_XX for your GPU:
+# - GTX TITAN X (Maxwell): sm_52
 # - T4: sm_75
 # - V100: sm_70
 # - A100: sm_80
@@ -153,6 +154,7 @@ Please review failed tests above
 nvidia-smi --query-gpu=name --format=csv,noheader
 
 # Common architectures:
+# GTX TITAN X (Maxwell) → sm_52
 # Tesla T4 → sm_75
 # Tesla V100 → sm_70
 # A100 → sm_80
@@ -161,7 +163,7 @@ nvidia-smi --query-gpu=name --format=csv,noheader
 
 Recompile with correct architecture:
 ```bash
-nvcc -arch=sm_75 ...  # Replace 75 with your architecture
+nvcc -arch=sm_52 ...  # Replace 52 with your architecture (52, 60, 61, 70, 75, 80, 86, 89)
 ```
 
 ### Error: "cannot find -lcuda_orderbook"
@@ -301,7 +303,7 @@ int main() {
 
 Compile and run:
 ```bash
-nvcc -arch=sm_75 -I../include -L../build -lcuda_orderbook test_performance.cu -o test_perf
+nvcc -arch=sm_52 -I../include -L../build -lcuda_orderbook test_performance.cu -o test_perf
 ./test_perf
 ```
 

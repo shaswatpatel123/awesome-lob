@@ -54,7 +54,9 @@ if command -v nvidia-smi &> /dev/null; then
     echo "Detected GPU: $GPU_NAME"
     
     # Set architecture based on common GPUs
-    if [[ $GPU_NAME == *"T4"* ]]; then
+    if [[ $GPU_NAME == *"TITAN X"* ]] || [[ $GPU_NAME == *"Maxwell"* ]]; then
+        ARCH="52"
+    elif [[ $GPU_NAME == *"T4"* ]]; then
         ARCH="75"
     elif [[ $GPU_NAME == *"V100"* ]]; then
         ARCH="70"
@@ -63,13 +65,13 @@ if command -v nvidia-smi &> /dev/null; then
     elif [[ $GPU_NAME == *"RTX 40"* ]]; then
         ARCH="89"
     else
-        ARCH="75"  # Default
-        echo -e "${YELLOW}Warning: Unknown GPU, using default architecture 75${NC}"
+        ARCH="52"  # Default to SM 52 for compatibility
+        echo -e "${YELLOW}Warning: Unknown GPU, using default architecture 52 (SM 52)${NC}"
     fi
     echo "Using CUDA architecture: $ARCH"
 else
-    ARCH="75"
-    echo -e "${YELLOW}Warning: nvidia-smi not found, using default architecture 75${NC}"
+    ARCH="52"
+    echo -e "${YELLOW}Warning: nvidia-smi not found, using default architecture 52 (SM 52)${NC}"
 fi
 
 nvcc -arch=sm_$ARCH \

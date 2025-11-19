@@ -14,7 +14,7 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CUDA_FLAGS "${CMAKE_CUDA_FLAGS} -O3 --use_fast_math")
 set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -O3 -Wall")
 
-# CUDA architectures - modify based on your GPU
+# CUDA architectures - supports multiple architectures including SM 52
 # Common architectures:
 # - Ampere (A100): 80
 # - Ampere (RTX 30xx, A6000): 86
@@ -22,7 +22,9 @@ set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -O3 -Wall")
 # - Volta (V100): 70
 # - Pascal (GTX 10xx, P100): 60, 61
 # - Maxwell (GTX TITAN X): 52
-set(CMAKE_CUDA_ARCHITECTURES 80)
+# Build for multiple architectures to support different GPUs
+# SM 52 (Maxwell) is included for compatibility
+set(CMAKE_CUDA_ARCHITECTURES "52;60;61;70;75;80;86;89")
 
 # Include directories
 include_directories(${CMAKE_SOURCE_DIR}/include)
@@ -154,5 +156,7 @@ message(STATUS "")
 # cmake -DCMAKE_BUILD_TYPE=Debug ..
 #
 # TO SPECIFY CUDA ARCHITECTURE:
-# cmake -DCMAKE_CUDA_ARCHITECTURES="75" ..
+# cmake -DCMAKE_CUDA_ARCHITECTURES="52" ..  # SM 52 (Maxwell)
+# cmake -DCMAKE_CUDA_ARCHITECTURES="75" ..  # RTX 20xx
+# cmake -DCMAKE_CUDA_ARCHITECTURES="86" ..  # RTX 30xx
 
