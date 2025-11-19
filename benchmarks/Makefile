@@ -4,13 +4,49 @@
 NVCC = nvcc
 NVCC_FLAGS = -std=c++14 -O3 -I../include --compiler-options -Wall -rdc=true
 
-# GPU Architecture (adjust for your GPU)
-# Common options:
-#   Tesla V100: sm_70
-#   Tesla T4, RTX 2080/2080 Ti: sm_75
-#   RTX 3080/3090: sm_86
-#   RTX 4080/4090: sm_89
-GPU_ARCH = sm_75
+# GPU Architecture - Auto-detect or manually specify
+# Supported: sm_52, sm_75, sm_80
+# Auto-detection: If GPU_ARCH is not set, will detect from GPU
+# Manual override: make GPU_ARCH=sm_75
+
+# Auto-detect GPU architecture if not specified
+ifeq ($(GPU_ARCH),)
+    # Try to detect from nvidia-smi compute capability
+    COMPUTE_CAP := $(shell nvidia-smi --query-gpu=compute_cap --format=csv,noheader 2>/dev/null | head -1 | tr -d '.')
+    ifeq ($(COMPUTE_CAP),)
+        # Fallback: try to detect from GPU name
+        GPU_NAME := $(shell nvidia-smi --query-gpu=name --format=csv,noheader 2>/dev/null | head -1)
+        ifneq ($(GPU_NAME),)
+            ifneq ($(findstring T4,$(GPU_NAME)),)
+                COMPUTE_CAP := 75
+            else ifneq ($(findstring V100,$(GPU_NAME)),)
+                COMPUTE_CAP := 70
+            else ifneq ($(findstring A100,$(GPU_NAME)),)
+                COMPUTE_CAP := 80
+            else ifneq ($(findstring RTX 30,$(GPU_NAME)),)
+                COMPUTE_CAP := 86
+            else ifneq ($(findstring RTX 40,$(GPU_NAME)),)
+                COMPUTE_CAP := 89
+            endif
+        endif
+    endif
+    
+    # Map compute capability to architecture (support sm_52, sm_75, sm_80)
+    ifeq ($(COMPUTE_CAP),52)
+        GPU_ARCH := sm_52
+    else ifeq ($(COMPUTE_CAP),75)
+        GPU_ARCH := sm_75
+    else ifeq ($(COMPUTE_CAP),80)
+        GPU_ARCH := sm_80
+    else ifeq ($(COMPUTE_CAP),86)
+        GPU_ARCH := sm_80
+    else ifeq ($(COMPUTE_CAP),70)
+        GPU_ARCH := sm_75
+    else
+        # Default to sm_75 if detection fails
+        GPU_ARCH := sm_75
+    endif
+endif
 
 # Source files
 CPU_SOURCES = ../src/orderbook_cpu.cpp
@@ -27,6 +63,7 @@ all: $(BENCHMARK_BIN)
 
 $(BENCHMARK_BIN): $(BENCHMARK_SOURCE) $(CPU_SOURCES) $(CUDA_SOURCES)
 	@echo "Compiling benchmark..."
+	@echo "Using GPU architecture: $(GPU_ARCH)"
 	$(NVCC) $(NVCC_FLAGS) -arch=$(GPU_ARCH) \
 		$(BENCHMARK_SOURCE) \
 		$(CPU_SOURCES) \
@@ -85,5 +122,7 @@ help:
 	@echo ""
 	@echo "GPU Architecture:"
 	@echo "  Current: $(GPU_ARCH)"
-	@echo "  Change with: make GPU_ARCH=sm_86"
+	@echo "  Supported: sm_52, sm_75, sm_80"
+	@echo "  Auto-detected or manually set"
+	@echo "  Override with: make GPU_ARCH=sm_75"
 
