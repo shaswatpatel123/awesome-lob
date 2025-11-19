@@ -48,30 +48,23 @@ echo ""
 echo -e "${YELLOW}Step 2: Compiling test program...${NC}"
 cd ../tests
 
-# Detect CUDA architecture
-if command -v nvidia-smi &> /dev/null; then
-    GPU_NAME=$(nvidia-smi --query-gpu=name --format=csv,noheader | head -1)
-    echo "Detected GPU: $GPU_NAME"
-    
-    # Set architecture based on common GPUs
-    if [[ $GPU_NAME == *"TITAN X"* ]] || [[ $GPU_NAME == *"Maxwell"* ]]; then
-        ARCH="52"
-    elif [[ $GPU_NAME == *"T4"* ]]; then
-        ARCH="75"
-    elif [[ $GPU_NAME == *"V100"* ]]; then
-        ARCH="70"
-    elif [[ $GPU_NAME == *"A100"* ]] || [[ $GPU_NAME == *"RTX 30"* ]]; then
-        ARCH="80"
-    elif [[ $GPU_NAME == *"RTX 40"* ]]; then
-        ARCH="89"
+# Auto-detect CUDA architecture using detection script
+DETECT_SCRIPT="../detect_gpu_arch.sh"
+if [ -f "$DETECT_SCRIPT" ]; then
+    ARCH=$(bash "$DETECT_SCRIPT")
+    if [ -n "$ARCH" ] && [[ "$ARCH" =~ ^[0-9]+$ ]]; then
+        if command -v nvidia-smi &> /dev/null; then
+            GPU_NAME=$(nvidia-smi --query-gpu=name --format=csv,noheader | head -1)
+            echo "Detected GPU: $GPU_NAME"
+        fi
+        echo "Auto-detected CUDA architecture: SM $ARCH"
     else
-        ARCH="52"  # Default to SM 52 for compatibility
-        echo -e "${YELLOW}Warning: Unknown GPU, using default architecture 52 (SM 52)${NC}"
+        ARCH="52"
+        echo -e "${YELLOW}Warning: Auto-detection failed, using default architecture 52 (SM 52)${NC}"
     fi
-    echo "Using CUDA architecture: $ARCH"
 else
     ARCH="52"
-    echo -e "${YELLOW}Warning: nvidia-smi not found, using default architecture 52 (SM 52)${NC}"
+    echo -e "${YELLOW}Warning: Detection script not found, using default architecture 52 (SM 52)${NC}"
 fi
 
 nvcc -arch=sm_$ARCH \

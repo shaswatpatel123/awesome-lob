@@ -4,7 +4,8 @@
 NVCC = nvcc
 NVCC_FLAGS = -std=c++14 -O3 -I../include --compiler-options -Wall -rdc=true --use_fast_math -Wno-deprecated-gpu-targets
 
-# GPU Architecture (adjust for your GPU)
+# GPU Architecture - Auto-detected if not specified
+# Override with: make GPU_ARCH=sm_86
 # Common options:
 #   A100: sm_80
 #   Tesla V100: sm_70
@@ -12,7 +13,19 @@ NVCC_FLAGS = -std=c++14 -O3 -I../include --compiler-options -Wall -rdc=true --us
 #   RTX 3080/3090: sm_86
 #   RTX 4080/4090: sm_89
 #   GTX TITAN X: sm_52
-GPU_ARCH = sm_80
+ifeq ($(GPU_ARCH),)
+    DETECT_SCRIPT = $(shell dirname $(abspath $(lastword $(MAKEFILE_LIST))))/../detect_gpu_arch.sh
+    ifeq ($(shell test -f $(DETECT_SCRIPT) && echo yes),yes)
+        DETECTED_ARCH = $(shell bash $(DETECT_SCRIPT))
+        GPU_ARCH = sm_$(DETECTED_ARCH)
+        $(info Auto-detected GPU architecture: $(GPU_ARCH))
+    else
+        GPU_ARCH = sm_52
+        $(info Using default GPU architecture: $(GPU_ARCH) (auto-detection unavailable))
+    endif
+else
+    $(info Using specified GPU architecture: $(GPU_ARCH))
+endif
 
 # Source files
 CPU_SOURCES = ../src/orderbook_cpu.cpp

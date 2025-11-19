@@ -14,17 +14,40 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CUDA_FLAGS "${CMAKE_CUDA_FLAGS} -O3 --use_fast_math")
 set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -O3 -Wall")
 
-# CUDA architectures - supports multiple architectures including SM 52
-# Common architectures:
-# - Ampere (A100): 80
-# - Ampere (RTX 30xx, A6000): 86
-# - Turing (RTX 20xx): 75
-# - Volta (V100): 70
-# - Pascal (GTX 10xx, P100): 60, 61
-# - Maxwell (GTX TITAN X): 52
-# Build for multiple architectures to support different GPUs
-# SM 52 (Maxwell) is included for compatibility
-set(CMAKE_CUDA_ARCHITECTURES "52;60;61;70;75;80;86;89")
+# CUDA architectures - Auto-detect GPU or use multiple architectures
+# If CMAKE_CUDA_ARCHITECTURES is not set, auto-detect from available GPU
+if(NOT DEFINED CMAKE_CUDA_ARCHITECTURES)
+    message(STATUS "Auto-detecting GPU architecture...")
+    
+    # Try to detect using our detection script
+    find_program(BASH_EXECUTABLE bash)
+    if(BASH_EXECUTABLE)
+        set(DETECT_SCRIPT "${CMAKE_SOURCE_DIR}/detect_gpu_arch.sh")
+        if(EXISTS "${DETECT_SCRIPT}")
+            execute_process(
+                COMMAND ${BASH_EXECUTABLE} "${DETECT_SCRIPT}"
+                OUTPUT_VARIABLE DETECTED_ARCH
+                OUTPUT_STRIP_TRAILING_WHITESPACE
+                ERROR_QUIET
+            )
+            if(DETECTED_ARCH AND DETECTED_ARCH MATCHES "^[0-9]+$")
+                message(STATUS "Detected GPU architecture: SM ${DETECTED_ARCH}")
+                set(CMAKE_CUDA_ARCHITECTURES "${DETECTED_ARCH}")
+            else
+                message(STATUS "Auto-detection failed, using multiple architectures for compatibility")
+                set(CMAKE_CUDA_ARCHITECTURES "52;60;61;70;75;80;86;89")
+            endif()
+        else
+            message(STATUS "Detection script not found, using multiple architectures for compatibility")
+            set(CMAKE_CUDA_ARCHITECTURES "52;60;61;70;75;80;86;89")
+        endif()
+    else
+        message(STATUS "Bash not found, using multiple architectures for compatibility")
+        set(CMAKE_CUDA_ARCHITECTURES "52;60;61;70;75;80;86;89")
+    endif()
+else()
+    message(STATUS "Using manually specified CUDA architectures: ${CMAKE_CUDA_ARCHITECTURES}")
+endif()
 
 # Include directories
 include_directories(${CMAKE_SOURCE_DIR}/include)
@@ -155,8 +178,11 @@ message(STATUS "")
 # TO BUILD IN DEBUG MODE:
 # cmake -DCMAKE_BUILD_TYPE=Debug ..
 #
-# TO SPECIFY CUDA ARCHITECTURE:
+# CUDA ARCHITECTURE AUTO-DETECTION:
+# By default, CMake will auto-detect your GPU architecture.
+# To override auto-detection, specify manually:
 # cmake -DCMAKE_CUDA_ARCHITECTURES="52" ..  # SM 52 (Maxwell)
 # cmake -DCMAKE_CUDA_ARCHITECTURES="75" ..  # RTX 20xx
 # cmake -DCMAKE_CUDA_ARCHITECTURES="86" ..  # RTX 30xx
+# cmake -DCMAKE_CUDA_ARCHITECTURES="52;75;86" ..  # Multiple architectures (fat binary)
 
