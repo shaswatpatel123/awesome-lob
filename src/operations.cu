@@ -404,20 +404,29 @@ __device__ void process_message_device(
         if (msg.side == Message::ASK) {
             // Sell limit: match against bids, then add remainder
             
-            // Count initial bid volume at or above our price
-            int32_t matchable_qty = 0;
-            for (int i = 0; i < n_orders; i++) {
-                if (bids[i].price != EMPTY_PRICE && bids[i].price >= msg.price) {
-                    matchable_qty += bids[i].quantity;
-                }
+            // Track quantity before matching
+            int32_t initial_qty = msg.quantity;
+            
+            // Match against bids (this will consume what it can)
+            // We need to track how much was actually matched
+            int32_t qtm_remaining = msg.quantity;
+            int32_t limit_price = msg.price;
+            
+            // Keep matching while we have quantity and valid bids
+            while (qtm_remaining > 0) {
+                int top_bid_idx = get_top_bid_order_idx(bids, n_orders);
+                if (top_bid_idx == -1) break;
+                if (bids[top_bid_idx].price == EMPTY_PRICE) break;
+                if (bids[top_bid_idx].price < limit_price) break;
+                
+                match_single_order_device(
+                    top_bid_idx, bids, qtm_remaining, trades, n_trades,
+                    msg.order_id, msg.time_sec, msg.time_ns, n_orders
+                );
             }
             
-            // Match against bids
-            match_against_bids_device(asks, bids, trades, msg, n_orders, n_trades);
-            
             // Calculate remaining quantity (what wasn't matched)
-            int32_t remaining = msg.quantity - matchable_qty;
-            if (remaining < 0) remaining = 0;
+            int32_t remaining = qtm_remaining;
             
             // Only add if there's remaining quantity
             if (remaining > 0) {
@@ -428,20 +437,29 @@ __device__ void process_message_device(
         } else if (msg.side == Message::BID) {
             // Buy limit: match against asks, then add remainder
             
-            // Count initial ask volume at or below our price
-            int32_t matchable_qty = 0;
-            for (int i = 0; i < n_orders; i++) {
-                if (asks[i].price != EMPTY_PRICE && asks[i].price <= msg.price) {
-                    matchable_qty += asks[i].quantity;
-                }
+            // Track quantity before matching
+            int32_t initial_qty = msg.quantity;
+            
+            // Match against asks (this will consume what it can)
+            // We need to track how much was actually matched
+            int32_t qtm_remaining = msg.quantity;
+            int32_t limit_price = msg.price;
+            
+            // Keep matching while we have quantity and valid asks
+            while (qtm_remaining > 0) {
+                int top_ask_idx = get_top_ask_order_idx(asks, n_orders);
+                if (top_ask_idx == -1) break;
+                if (asks[top_ask_idx].price == EMPTY_PRICE) break;
+                if (asks[top_ask_idx].price > limit_price) break;
+                
+                match_single_order_device(
+                    top_ask_idx, asks, qtm_remaining, trades, n_trades,
+                    msg.order_id, msg.time_sec, msg.time_ns, n_orders
+                );
             }
             
-            // Match against asks
-            match_against_asks_device(asks, bids, trades, msg, n_orders, n_trades);
-            
             // Calculate remaining quantity (what wasn't matched)
-            int32_t remaining = msg.quantity - matchable_qty;
-            if (remaining < 0) remaining = 0;
+            int32_t remaining = qtm_remaining;
             
             // Only add if there's remaining quantity
             if (remaining > 0) {

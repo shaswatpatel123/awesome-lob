@@ -132,6 +132,7 @@ bool unit_test_add_order(TestStats& stats) {
     CUDA_CHECK(cudaMemcpy(d_msg, &msg, sizeof(Message), cudaMemcpyHostToDevice));
     
     process_messages_sequential_kernel<<<1, 256>>>(gpu_batch, d_msg, 1, 1);
+    CUDA_CHECK(cudaGetLastError());
     CUDA_CHECK(cudaDeviceSynchronize());
     
     // Copy GPU results
