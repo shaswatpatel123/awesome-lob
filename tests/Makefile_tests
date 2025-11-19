@@ -7,7 +7,7 @@ GPU_ARCH = sm_52
 
 # Source files
 CPU_SOURCES = ../src/orderbook_cpu.cpp data_generator.cpp
-CUDA_SOURCES = ../src/kernels.cu ../src/operations.cu
+CUDA_SOURCES = ../src/kernels.cu ../src/operations.cu ../src/utils.cu
 TEST_SOURCE = test_suite.cu
 
 # Output
