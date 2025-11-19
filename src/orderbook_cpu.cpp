@@ -20,19 +20,45 @@ bool OrderbookCPU::allocate(int n_orders, int n_trades_max) {
     n_orders_per_side = n_orders;
     n_trades = n_trades_max;
     
-    asks = new Order[n_orders];
-    bids = new Order[n_orders];
-    trades = new Trade[n_trades_max];
+    // Calculate memory requirements
+    size_t orders_mem = n_orders * sizeof(Order) * 2;  // asks + bids
+    size_t trades_mem = n_trades_max * sizeof(Trade);
+    size_t metadata_mem = n_orders * sizeof(OrderMetadata) * 2;
+    size_t buckets_mem = n_price_buckets * sizeof(PriceBucket) * 2;
+    size_t price_map_mem = price_map_size * sizeof(PriceMapEntry) * 2;
+    size_t order_id_map_mem = order_id_map_size * sizeof(OrderIDMapEntry) * 2;
+    size_t total_mem = orders_mem + trades_mem + metadata_mem + buckets_mem + 
+                       price_map_mem + order_id_map_mem;
     
-    ask_metadata = new OrderMetadata[n_orders];
-    ask_buckets = new PriceBucket[n_price_buckets];
-    ask_price_map = new PriceMapEntry[price_map_size];
-    ask_order_id_map = new OrderIDMapEntry[order_id_map_size];
+    // Warn if memory is very large
+    if (total_mem > 1024 * 1024 * 1024) {  // > 1 GB per book
+        std::cerr << "WARNING: Large memory allocation per book: " 
+                  << total_mem / (1024.0 * 1024.0) << " MB" << std::endl;
+        std::cerr << "  Hash table sizes: " << price_map_size 
+                  << " (consider reducing to 2048)" << std::endl;
+    }
     
-    bid_metadata = new OrderMetadata[n_orders];
-    bid_buckets = new PriceBucket[n_price_buckets];
-    bid_price_map = new PriceMapEntry[price_map_size];
-    bid_order_id_map = new OrderIDMapEntry[order_id_map_size];
+    try {
+        asks = new Order[n_orders];
+        bids = new Order[n_orders];
+        trades = new Trade[n_trades_max];
+        
+        ask_metadata = new OrderMetadata[n_orders];
+        ask_buckets = new PriceBucket[n_price_buckets];
+        ask_price_map = new PriceMapEntry[price_map_size];
+        ask_order_id_map = new OrderIDMapEntry[order_id_map_size];
+        
+        bid_metadata = new OrderMetadata[n_orders];
+        bid_buckets = new PriceBucket[n_price_buckets];
+        bid_price_map = new PriceMapEntry[price_map_size];
+        bid_order_id_map = new OrderIDMapEntry[order_id_map_size];
+    } catch (const std::bad_alloc& e) {
+        std::cerr << "ERROR: Failed to allocate CPU memory: " << e.what() << std::endl;
+        std::cerr << "  Required per book: " << total_mem / (1024.0 * 1024.0) << " MB" << std::endl;
+        std::cerr << "  Consider reducing hash table sizes (PRICE_MAP_SIZE, ORDER_ID_MAP_SIZE)" << std::endl;
+        cleanup();
+        return false;
+    }
     
     if (!asks || !bids || !trades ||
         !ask_metadata || !ask_buckets || !ask_price_map || !ask_order_id_map ||
@@ -172,7 +198,36 @@ void OrderbookCPU::initialize() {
 
 bool OrderbookBatchCPU::allocate(int n_books, int n_orders_per_book, int n_trades_per_book) {
     num_books = n_books;
-    books = new OrderbookCPU[n_books];
+    
+    // Estimate total memory requirement
+    size_t per_book_mem = 
+        n_orders_per_book * sizeof(Order) * 2 +  // asks + bids
+        n_trades_per_book * sizeof(Trade) +
+        n_orders_per_book * sizeof(OrderMetadata) * 2 +
+        1024 * sizeof(PriceBucket) * 2 +
+        PRICE_MAP_SIZE * sizeof(PriceMapEntry) * 2 +
+        ORDER_ID_MAP_SIZE * sizeof(OrderIDMapEntry) * 2;
+    size_t total_mem = per_book_mem * n_books + n_books * sizeof(OrderbookCPU);
+    
+    // Warn if memory requirement is very large
+    if (total_mem > 1024ULL * 1024 * 1024 * 10) {  // > 10 GB
+        std::cerr << "WARNING: Large memory allocation required: " 
+                  << total_mem / (1024.0 * 1024.0 * 1024.0) << " GB" << std::endl;
+        std::cerr << "  Books: " << n_books << ", Per book: " 
+                  << per_book_mem / (1024.0 * 1024.0) << " MB" << std::endl;
+        std::cerr << "  Hash table sizes: " << PRICE_MAP_SIZE 
+                  << " (consider reducing to 2048)" << std::endl;
+        std::cerr << "  This may cause out-of-memory errors!" << std::endl;
+    }
+    
+    try {
+        books = new OrderbookCPU[n_books];
+    } catch (const std::bad_alloc& e) {
+        std::cerr << "ERROR: Failed to allocate CPU batch: " << e.what() << std::endl;
+        std::cerr << "  Required: " << total_mem / (1024.0 * 1024.0 * 1024.0) << " GB" << std::endl;
+        std::cerr << "  Consider reducing number of books or hash table sizes" << std::endl;
+        return false;
+    }
     
     if (!books) {
         return false;
@@ -191,6 +246,7 @@ bool OrderbookBatchCPU::allocate(int n_books, int n_orders_per_book, int n_trade
     // But we can optimize by reducing hash table sizes if needed
     for (int i = 0; i < n_books; i++) {
         if (!books[i].allocate(n_orders_per_book, n_trades_per_book)) {
+            std::cerr << "ERROR: Failed to allocate book " << i << " of " << n_books << std::endl;
             cleanup();
             return false;
         }
