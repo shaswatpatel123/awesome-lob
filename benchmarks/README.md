@@ -1,12 +1,17 @@
-# CPU vs GPU Orderbook Benchmarks
+# Orderbook Benchmarks
 
 ## Overview
 
-This directory contains benchmarking tools to compare the performance of CPU sequential implementation against GPU CUDA implementation.
+This directory contains benchmarking tools for the CUDA orderbook implementation:
+
+1. **CPU vs GPU Benchmark** - Compares CPU sequential vs GPU parallel performance
+2. **Operation Timing Benchmark** - Measures timing for specific operations (ADD, MATCH, CANCEL, MARKET)
 
 ## Files
 
-- `benchmark_cpu_vs_gpu.cpp` - Main benchmark comparing CPU and GPU performance
+- `benchmark_cpu_vs_gpu.cu` - Main benchmark comparing CPU and GPU performance
+- `benchmark_operations.cu` - Operation-specific timing benchmark
+- `Makefile` - Build system with convenient targets
 - `README.md` - This file
 
 ## Building
@@ -115,6 +120,307 @@ GPU Speedup: 8.26x
 | Small (10 books, 100 msgs) | 2-5x |
 | Medium (100 books, 1000 msgs) | 8-12x |
 | Large (1000 books, 10000 msgs) | 10-15x |
+
+---
+
+# Operation Timing Benchmark
+
+## Overview
+
+The `benchmark_operations` tool measures timing for specific orderbook operations in isolation:
+
+1. **ADD Operations** - Non-matching limit order inserts (pure add overhead)
+2. **MATCH Operations** - Limit orders that cross the spread and match
+3. **CANCEL Operations** - Order cancellation by ID
+4. **MARKET Operations** - Market order aggressive matching
+
+## Building
+
+### Using Makefile
+
+```bash
+cd benchmarks
+make operations        # Build only operations benchmark
+make                   # Build all benchmarks
+```
+
+### Manual Compilation
+
+```bash
+nvcc -o benchmark_operations \
+  benchmark_operations.cu \
+  ../src/kernels.cu \
+  ../src/operations.cu \
+  ../src/utils.cu \
+  -I../include \
+  -std=c++14 -O3 -arch=sm_80
+```
+
+## Running
+
+### Using Makefile Targets
+
+```bash
+make run-ops              # Default: 100 books, 1000 msgs
+make run-ops-small        # Small: 10 books, 100 msgs
+make run-ops-medium       # Medium: 100 books, 1000 msgs
+make run-ops-large        # Large: 1000 books, 10000 msgs
+```
+
+### Direct Execution
+
+```bash
+./benchmark_operations                # Default parameters
+./benchmark_operations 100 1000       # Custom: 100 books, 1000 msgs/book
+./benchmark_operations 1000 10000     # Large workload
+```
+
+### Help
+
+```bash
+./benchmark_operations --help
+```
+
+## Output Format
+
+```
+╔════════════════════════════════════════════════════════════════════╗
+║           ORDERBOOK OPERATION TIMING BENCHMARK                     ║
+╚════════════════════════════════════════════════════════════════════╝
+
+📊 Configuration:
+  Orderbooks:        100
+  Messages per book: 1000
+  Total messages:    100000
+  Orders per side:   1000
+  Max trades:        2000
+  GPU block size:    256 threads
+
+======================================================================
+SCENARIO 1: ADD Operations (Non-Matching Inserts)
+======================================================================
+
+Running: ADD Operations...
+  Setting up orderbook state...
+  Warm-up run...
+  Timed run...
+  ✓ Complete
+
+=== ADD Operations ===
+Operation Type:     ADD
+Messages Processed: 100000
+Total Time:         15.234 ms
+Time per Operation: 0.152 μs
+Throughput:         6564551 ops/sec
+
+======================================================================
+SCENARIO 2: LIMIT Order Insert + Match
+======================================================================
+
+Running: LIMIT Order Insert+Match...
+  Setting up orderbook state...
+  Warm-up run...
+  Timed run...
+  ✓ Complete
+
+=== LIMIT Order Insert+Match ===
+Operation Type:     MATCH
+Messages Processed: 100000
+Total Time:         28.456 ms
+Time per Operation: 0.285 μs
+Throughput:         3514376 ops/sec
+
+======================================================================
+SCENARIO 3: CANCEL Operations
+======================================================================
+
+Running: CANCEL Operations...
+  Setting up orderbook state...
+  Warm-up run...
+  Timed run...
+  ✓ Complete
+
+=== CANCEL Operations ===
+Operation Type:     CANCEL
+Messages Processed: 100000
+Total Time:         12.789 ms
+Time per Operation: 0.128 μs
+Throughput:         7819417 ops/sec
+
+======================================================================
+SCENARIO 4: MARKET Order Insert + Match
+======================================================================
+
+Running: MARKET Order Insert+Match...
+  Setting up orderbook state...
+  Warm-up run...
+  Timed run...
+  ✓ Complete
+
+=== MARKET Order Insert+Match ===
+Operation Type:     MARKET
+Messages Processed: 100000
+Total Time:         32.123 ms
+Time per Operation: 0.321 μs
+Throughput:         3112840 ops/sec
+
+╔════════════════════════════════════════════════════════════════════╗
+║              PERFORMANCE COMPARISON SUMMARY                        ║
+╚════════════════════════════════════════════════════════════════════╝
+
+Operation                       Time (ms)     μs/op        ops/sec
+-----------------------------------------------------------------------
+ADD Operations                     15.234      0.152        6564551
+LIMIT Order Insert+Match           28.456      0.285        3514376
+CANCEL Operations                  12.789      0.128        7819417
+MARKET Order Insert+Match          32.123      0.321        3112840
+
+=== Relative Performance (normalized to fastest) ===
+ADD Operations                      1.19x
+LIMIT Order Insert+Match            2.22x
+CANCEL Operations                   1.00x ← FASTEST
+MARKET Order Insert+Match           2.51x (slower)
+
+=== Key Insights ===
+• Lower μs/op = faster operation
+• Higher ops/sec = better throughput
+• Relative performance shows operation cost ratios
+
+✓ Benchmark Complete!
+```
+
+## Understanding Results
+
+### Metrics Explained
+
+1. **Time (ms)**: Total execution time for all operations
+   - Measured using CUDA events (GPU time only, no CPU overhead)
+   - Lower is better
+
+2. **μs/op (microseconds per operation)**: Average time per single operation
+   - Most useful metric for comparing operation costs
+   - Formula: `(time_ms × 1000) / num_messages`
+
+3. **ops/sec (operations per second)**: Throughput
+   - Higher is better
+   - Formula: `num_messages / (time_ms / 1000)`
+
+4. **Relative Performance**: Operations compared to fastest
+   - Shows which operations are more expensive
+   - Example: 2.22x means operation takes 2.22× longer than fastest
+
+### Expected Performance Hierarchy
+
+**Typical Performance Ranking (fastest to slowest):**
+
+1. **CANCEL** - Fastest (simple lookup + quantity update)
+   - ~0.1-0.2 μs per operation
+   - No matching logic, minimal state changes
+
+2. **ADD** - Fast (find empty slot + insert)
+   - ~0.15-0.25 μs per operation
+   - Linear search for empty slot
+   - No matching overhead (non-matching orders)
+
+3. **LIMIT Match** - Moderate (match algorithm + partial add)
+   - ~0.25-0.4 μs per operation
+   - Price-time priority search
+   - Trade recording
+   - Remainder insertion if not fully matched
+
+4. **MARKET** - Slowest (aggressive matching at any price)
+   - ~0.3-0.5 μs per operation
+   - May traverse multiple price levels
+   - Multiple trade records
+
+### Scenario Details
+
+#### Scenario 1: ADD Operations
+- **Setup**: Empty orderbook
+- **Test**: Non-matching LIMIT orders (wide spread)
+  - Bids at 9000-9900 (won't match asks)
+  - Asks at 11000-11900 (won't match bids)
+- **Measures**: Pure insertion overhead
+- **Why it matters**: Baseline for order addition cost
+
+#### Scenario 2: LIMIT Order Insert + Match
+- **Setup**: Pre-populated orderbook with liquidity
+  - Asks at 10050, 10060, 10070, ...
+  - Bids at 9950, 9940, 9930, ...
+- **Test**: LIMIT orders that cross spread
+  - Buy at 10060 (matches asks)
+  - Sell at 9940 (matches bids)
+- **Measures**: Matching algorithm + trade recording
+- **Why it matters**: Most common operation in active markets
+
+#### Scenario 3: CANCEL Operations
+- **Setup**: Orderbook populated with non-matching orders (from Scenario 1)
+- **Test**: CANCEL messages for existing order IDs
+- **Measures**: Order lookup + cancellation overhead
+- **Why it matters**: Order modification/cancellation is frequent
+
+#### Scenario 4: MARKET Orders
+- **Setup**: Pre-populated orderbook with liquidity (same as Scenario 2)
+- **Test**: MARKET orders (match at any price)
+  - Buy MARKET (sweeps asks)
+  - Sell MARKET (sweeps bids)
+- **Measures**: Aggressive matching without price limits
+- **Why it matters**: Represents urgent order execution
+
+## Use Cases
+
+### Performance Analysis
+Compare relative costs of different operations to understand bottlenecks:
+```bash
+make run-ops-large
+```
+
+### Optimization Validation
+Before/after comparisons to validate optimizations:
+```bash
+# Before optimization
+./benchmark_operations 1000 10000 > before.txt
+
+# After optimization
+./benchmark_operations 1000 10000 > after.txt
+
+# Compare
+diff before.txt after.txt
+```
+
+### Hardware Comparison
+Compare performance across different GPUs:
+```bash
+# On GPU 1
+./benchmark_operations 100 1000
+
+# On GPU 2
+./benchmark_operations 100 1000
+```
+
+### Scalability Testing
+Test how performance scales with workload:
+```bash
+for size in 10 100 1000 10000; do
+  echo "=== $size books ==="
+  ./benchmark_operations $size 1000
+done
+```
+
+## Tips
+
+1. **Warm-up**: Each scenario includes a warm-up run (not timed) to eliminate cold-start effects
+
+2. **Reproducibility**: Results may vary slightly between runs due to GPU scheduling
+   - Run multiple times and average for accurate measurements
+
+3. **Interpretation**: Focus on relative performance ratios rather than absolute times
+   - Ratios are more stable across different hardware
+
+4. **Workload Size**: Larger workloads (more books/messages) provide more accurate timing
+   - Small workloads may be dominated by kernel launch overhead
+
+---
 
 ## Troubleshooting
 

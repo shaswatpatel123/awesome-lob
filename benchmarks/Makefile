@@ -18,17 +18,19 @@ GPU_ARCH = sm_80
 CPU_SOURCES = ../src/orderbook_cpu.cpp
 CUDA_SOURCES = ../src/kernels.cu ../src/operations.cu ../src/utils.cu
 BENCHMARK_SOURCE = benchmark_cpu_vs_gpu.cu
+OPERATIONS_BENCHMARK_SOURCE = benchmark_operations.cu
 
 # Output
 BENCHMARK_BIN = benchmark_cpu_vs_gpu
+OPERATIONS_BIN = benchmark_operations
 
 # Targets
-.PHONY: all clean run help
+.PHONY: all clean run help operations
 
-all: $(BENCHMARK_BIN)
+all: $(BENCHMARK_BIN) $(OPERATIONS_BIN)
 
 $(BENCHMARK_BIN): $(BENCHMARK_SOURCE) $(CPU_SOURCES) $(CUDA_SOURCES)
-	@echo "Compiling benchmark..."
+	@echo "Compiling CPU vs GPU benchmark..."
 	$(NVCC) $(NVCC_FLAGS) -arch=$(GPU_ARCH) \
 		$(BENCHMARK_SOURCE) \
 		$(CPU_SOURCES) \
@@ -36,9 +38,19 @@ $(BENCHMARK_BIN): $(BENCHMARK_SOURCE) $(CPU_SOURCES) $(CUDA_SOURCES)
 		-o $(BENCHMARK_BIN)
 	@echo "Build complete: $(BENCHMARK_BIN)"
 
+$(OPERATIONS_BIN): $(OPERATIONS_BENCHMARK_SOURCE) $(CUDA_SOURCES)
+	@echo "Compiling operations timing benchmark..."
+	$(NVCC) $(NVCC_FLAGS) -arch=$(GPU_ARCH) \
+		$(OPERATIONS_BENCHMARK_SOURCE) \
+		$(CUDA_SOURCES) \
+		-o $(OPERATIONS_BIN)
+	@echo "Build complete: $(OPERATIONS_BIN)"
+
+operations: $(OPERATIONS_BIN)
+
 clean:
 	@echo "Cleaning..."
-	rm -f $(BENCHMARK_BIN)
+	rm -f $(BENCHMARK_BIN) $(OPERATIONS_BIN)
 	@echo "Clean complete"
 
 run: $(BENCHMARK_BIN)
@@ -57,6 +69,22 @@ run-large: $(BENCHMARK_BIN)
 	@echo "Running large workload (1000 books, 10000 messages)..."
 	./$(BENCHMARK_BIN) 1000 10000 200 200
 
+run-ops: $(OPERATIONS_BIN)
+	@echo "Running operation timing benchmark with default parameters..."
+	./$(OPERATIONS_BIN)
+
+run-ops-small: $(OPERATIONS_BIN)
+	@echo "Running operation timing benchmark (small: 10 books, 100 msgs)..."
+	./$(OPERATIONS_BIN) 10 100
+
+run-ops-medium: $(OPERATIONS_BIN)
+	@echo "Running operation timing benchmark (medium: 100 books, 1000 msgs)..."
+	./$(OPERATIONS_BIN) 100 1000
+
+run-ops-large: $(OPERATIONS_BIN)
+	@echo "Running operation timing benchmark (large: 1000 books, 10000 msgs)..."
+	./$(OPERATIONS_BIN) 1000 10000
+
 profile: $(BENCHMARK_BIN)
 	@echo "Profiling with nvprof..."
 	nvprof ./$(BENCHMARK_BIN) 100 1000 100 100
@@ -71,18 +99,32 @@ profile-ncu: $(BENCHMARK_BIN)
 
 help:
 	@echo "Available targets:"
-	@echo "  make              - Build the benchmark"
+	@echo ""
+	@echo "BUILD:"
+	@echo "  make              - Build all benchmarks"
+	@echo "  make operations   - Build operations timing benchmark only"
 	@echo "  make clean        - Remove build artifacts"
+	@echo ""
+	@echo "CPU vs GPU BENCHMARK:"
 	@echo "  make run          - Run with default parameters"
 	@echo "  make run-small    - Run small workload"
 	@echo "  make run-medium   - Run medium workload"
 	@echo "  make run-large    - Run large workload"
+	@echo ""
+	@echo "OPERATION TIMING BENCHMARK:"
+	@echo "  make run-ops        - Run operation timing (default: 100 books, 1000 msgs)"
+	@echo "  make run-ops-small  - Run operation timing (10 books, 100 msgs)"
+	@echo "  make run-ops-medium - Run operation timing (100 books, 1000 msgs)"
+	@echo "  make run-ops-large  - Run operation timing (1000 books, 10000 msgs)"
+	@echo ""
+	@echo "PROFILING:"
 	@echo "  make profile      - Profile with nvprof"
 	@echo "  make profile-nsys - Profile with Nsight Systems"
 	@echo "  make profile-ncu  - Profile with Nsight Compute"
 	@echo ""
 	@echo "Custom parameters:"
-	@echo "  ./$(BENCHMARK_BIN) <num_books> <messages_per_book> <orders_per_side> <max_trades>"
+	@echo "  ./$(BENCHMARK_BIN) <num_books> <msgs_per_book> <orders_per_side> <max_trades>"
+	@echo "  ./$(OPERATIONS_BIN) <num_books> <msgs_per_book>"
 	@echo ""
 	@echo "GPU Architecture:"
 	@echo "  Current: $(GPU_ARCH)"

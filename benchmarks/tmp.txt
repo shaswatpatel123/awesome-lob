@@ -1,0 +1,124 @@
+[spp9399@cuda5 benchmarks]$ ./benchmark_cpu_vs_gpu
+=== CPU vs GPU Orderbook Benchmark ===
+
+Configuration:
+  Number of orderbooks: 100
+  Messages per orderbook: 1000
+  Orders per side: 100
+  Max trades: 100
+  Total messages: 100000
+
+Generating test messages...
+
+=== CPU Benchmark ===
+Allocating CPU memory...
+Processing messages on CPU...
+CPU Time: 59.256 ms
+CPU Throughput: 1.68759e+06 messages/sec
+
+=== GPU Benchmark ===
+Allocating GPU memory...
+Initializing GPU orderbooks...
+Copying messages to GPU...
+Warm-up run...
+Processing messages on GPU...
+GPU Time: 57.4761 ms
+GPU Throughput: 1.73985e+06 messages/sec
+
+=== Comparison ===
+CPU Time: 59.256 ms
+GPU Time: 57.4761 ms
+GPU Speedup: 1.03097x
+✓ GPU is 1.03097x faster than CPU!
+
+=== Benchmark Complete ===
+[spp9399@cuda5 benchmarks]$ ./benchmark_cpu_vs_gpu 100 1000 100 100
+=== CPU vs GPU Orderbook Benchmark ===
+
+Configuration:
+  Number of orderbooks: 100
+  Messages per orderbook: 1000
+  Orders per side: 100
+  Max trades: 100
+  Total messages: 100000
+
+Generating test messages...
+
+=== CPU Benchmark ===
+Allocating CPU memory...
+Processing messages on CPU...
+CPU Time: 96.806 ms
+CPU Throughput: 1.03299e+06 messages/sec
+
+=== GPU Benchmark ===
+Allocating GPU memory...
+Initializing GPU orderbooks...
+Copying messages to GPU...
+Warm-up run...
+Processing messages on GPU...
+GPU Time: 57.3215 ms
+GPU Throughput: 1.74455e+06 messages/sec
+
+=== Comparison ===
+CPU Time: 96.806 ms
+GPU Time: 57.3215 ms
+GPU Speedup: 1.68883x
+✓ GPU is 1.68883x faster than CPU!
+
+=== Benchmark Complete ===
+[spp9399@cuda5 benchmarks]$ ./benchmark_cpu_vs_gpu 1000 10000 200 200
+=== CPU vs GPU Orderbook Benchmark ===
+
+Configuration:
+  Number of orderbooks: 1000
+  Messages per orderbook: 10000
+  Orders per side: 200
+  Max trades: 200
+  Total messages: 10000000
+
+Generating test messages...
+
+=== CPU Benchmark ===
+Allocating CPU memory...
+Processing messages on CPU...
+CPU Time: 8406.7 ms
+CPU Throughput: 1.18953e+06 messages/sec
+
+=== GPU Benchmark ===
+Allocating GPU memory...
+Initializing GPU orderbooks...
+Copying messages to GPU...
+Warm-up run...
+1Processing messages on GPU...
+GPU Time: 2921.79 ms
+GPU Throughput: 3.42256e+06 messages/sec
+
+=== Comparison ===
+CPU Time: 8406.7 ms
+GPU Time: 2921.79 ms
+GPU Speedup: 2.87724x
+✓ GPU is 2.87724x faster than CPU!
+
+=== Benchmark Complete ===
+[spp9399@cuda5 benchmarks]$ ./benchmark_cpu_vs_gpu 10000 100000 500 500
+=== CPU vs GPU Orderbook Benchmark ===
+
+Configuration:
+  Number of orderbooks: 10000
+  Messages per orderbook: 100000
+  Orders per side: 500
+  Max trades: 500
+  Total messages: 1000000000
+
+Generating test messages...
+
+=== CPU Benchmark ===
+Allocating CPU memory...
+Processing messages on CPU...
+CPU Time: 1.81817e+06 ms
+CPU Throughput: 550003 messages/sec
+
+=== GPU Benchmark ===
+Allocating GPU memory...
+Initializing GPU orderbooks...
+CUDA Error in benchmark_cpu_vs_gpu.cu at line 123: out of memory
