@@ -7,6 +7,7 @@
 #include "kernels.cuh"
 #include <cuda_runtime.h>
 #include <cstring>
+#include <cstdio>
 
 namespace cuda_orderbook {
 
@@ -32,9 +33,32 @@ bool allocate_orderbook_batch(
     size_t order_id_map_size = num_books * batch.order_id_map_size * sizeof(OrderIDMapEntry);
     size_t trackers_size = num_books * sizeof(BestPriceTracker);
 
+    // Calculate total memory requirement
+    size_t total_memory = orders_size * 2 + trades_size + metadata_size * 2 + 
+                          buckets_size * 2 + price_map_size * 2 + 
+                          order_id_map_size * 2 + trackers_size * 2;
+    
+    // Check available GPU memory
+    size_t free_mem, total_mem;
+    cudaMemGetInfo(&free_mem, &total_mem);
+    
+    if (total_memory > free_mem) {
+        fprintf(stderr, "ERROR: Insufficient GPU memory!\n");
+        fprintf(stderr, "  Required: %.2f GB\n", total_memory / (1024.0 * 1024.0 * 1024.0));
+        fprintf(stderr, "  Available: %.2f GB\n", free_mem / (1024.0 * 1024.0 * 1024.0));
+        fprintf(stderr, "  Books: %d, Orders/book: %d\n", num_books, n_orders_per_book);
+        fprintf(stderr, "  Hash table size: %d (consider reducing to 2048)\n", batch.price_map_size);
+        return false;
+    }
+
     // Allocate orders and trades
-    if (cudaMalloc(&batch.d_asks, orders_size) != cudaSuccess) return false;
-    if (cudaMalloc(&batch.d_bids, orders_size) != cudaSuccess) {
+    cudaError_t err;
+    if ((err = cudaMalloc(&batch.d_asks, orders_size)) != cudaSuccess) {
+        fprintf(stderr, "ERROR: Failed to allocate asks: %s\n", cudaGetErrorString(err));
+        return false;
+    }
+    if ((err = cudaMalloc(&batch.d_bids, orders_size)) != cudaSuccess) {
+        fprintf(stderr, "ERROR: Failed to allocate bids: %s\n", cudaGetErrorString(err));
         cudaFree(batch.d_asks);
         return false;
     }
@@ -58,7 +82,10 @@ bool allocate_orderbook_batch(
         cudaFree(batch.d_ask_metadata);
         return false;
     }
-    if (cudaMalloc(&batch.d_ask_price_map, price_map_size) != cudaSuccess) {
+    if ((err = cudaMalloc(&batch.d_ask_price_map, price_map_size)) != cudaSuccess) {
+        fprintf(stderr, "ERROR: Failed to allocate ask_price_map (%.2f GB): %s\n", 
+                price_map_size / (1024.0 * 1024.0 * 1024.0), cudaGetErrorString(err));
+        fprintf(stderr, "  Consider reducing PRICE_MAP_SIZE from %d to 2048\n", batch.price_map_size);
         cudaFree(batch.d_asks);
         cudaFree(batch.d_bids);
         cudaFree(batch.d_trades);
@@ -66,7 +93,10 @@ bool allocate_orderbook_batch(
         cudaFree(batch.d_ask_buckets);
         return false;
     }
-    if (cudaMalloc(&batch.d_ask_order_id_map, order_id_map_size) != cudaSuccess) {
+    if ((err = cudaMalloc(&batch.d_ask_order_id_map, order_id_map_size)) != cudaSuccess) {
+        fprintf(stderr, "ERROR: Failed to allocate ask_order_id_map (%.2f GB): %s\n", 
+                order_id_map_size / (1024.0 * 1024.0 * 1024.0), cudaGetErrorString(err));
+        fprintf(stderr, "  Consider reducing ORDER_ID_MAP_SIZE from %d to 2048\n", batch.order_id_map_size);
         cudaFree(batch.d_asks);
         cudaFree(batch.d_bids);
         cudaFree(batch.d_trades);

@@ -178,7 +178,17 @@ bool OrderbookBatchCPU::allocate(int n_books, int n_orders_per_book, int n_trade
         return false;
     }
     
+    // Pre-set capacity constants for all books (avoid repeated lookups)
+    // This allows us to optimize allocation
+    for (int i = 0; i < n_books; i++) {
+        books[i].n_price_buckets = 1024;
+        books[i].price_map_size = PRICE_MAP_SIZE;
+        books[i].order_id_map_size = ORDER_ID_MAP_SIZE;
+    }
+    
     // Allocate each orderbook
+    // Note: Sequential allocation is necessary due to constructor dependencies
+    // But we can optimize by reducing hash table sizes if needed
     for (int i = 0; i < n_books; i++) {
         if (!books[i].allocate(n_orders_per_book, n_trades_per_book)) {
             cleanup();

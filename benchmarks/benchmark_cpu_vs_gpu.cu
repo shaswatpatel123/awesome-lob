@@ -62,6 +62,9 @@ double benchmark_cpu(
     std::cout << "\n=== CPU Benchmark ===" << std::endl;
     std::cout << "Allocating CPU memory..." << std::endl;
     
+    // Time allocation separately (not included in processing time)
+    auto alloc_start = high_resolution_clock::now();
+    
     // Allocate CPU batch
     OrderbookBatchCPU cpu_batch;
     if (!cpu_batch.allocate(num_books, n_orders_per_book, n_trades_per_book)) {
@@ -69,9 +72,13 @@ double benchmark_cpu(
         return -1.0;
     }
     
+    auto alloc_end = high_resolution_clock::now();
+    auto alloc_duration = duration_cast<milliseconds>(alloc_end - alloc_start);
+    std::cout << "CPU Allocation Time: " << alloc_duration.count() << " ms" << std::endl;
+    
     std::cout << "Processing messages on CPU..." << std::endl;
     
-    // Benchmark CPU processing
+    // Benchmark CPU processing (allocation NOT included)
     auto start = high_resolution_clock::now();
     
     process_messages_batch_cpu(cpu_batch, messages.data(), num_messages_per_book);
@@ -100,6 +107,12 @@ double benchmark_gpu(
     std::cout << "\n=== GPU Benchmark ===" << std::endl;
     std::cout << "Allocating GPU memory..." << std::endl;
     
+    // Time allocation separately (not included in processing time)
+    cudaEvent_t alloc_start, alloc_stop;
+    cudaEventCreate(&alloc_start);
+    cudaEventCreate(&alloc_stop);
+    cudaEventRecord(alloc_start);
+    
     // Allocate GPU batch
     OrderbookBatch gpu_batch;
     if (!allocate_orderbook_batch(gpu_batch, num_books, n_orders_per_book, n_trades_per_book)) {
@@ -126,6 +139,14 @@ double benchmark_gpu(
     // Copy messages to GPU
     std::cout << "Copying messages to GPU..." << std::endl;
     CHECK_CUDA_ERROR(cudaMemcpy(d_messages, messages.data(), messages_size, cudaMemcpyHostToDevice));
+    
+    cudaEventRecord(alloc_stop);
+    cudaEventSynchronize(alloc_stop);
+    float alloc_time_ms = 0;
+    cudaEventElapsedTime(&alloc_time_ms, alloc_start, alloc_stop);
+    std::cout << "GPU Allocation Time: " << alloc_time_ms << " ms" << std::endl;
+    cudaEventDestroy(alloc_start);
+    cudaEventDestroy(alloc_stop);
     
     // Warm-up run
     std::cout << "Warm-up run..." << std::endl;
