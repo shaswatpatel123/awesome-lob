@@ -7,11 +7,10 @@ NVCC_FLAGS = -std=c++14 -O3 -I../include --compiler-options -Wall -rdc=true
 # GPU Architecture (adjust for your GPU)
 # Common options:
 #   Tesla V100: sm_70
-#   RTX 2080/2080 Ti: sm_75
+#   Tesla T4, RTX 2080/2080 Ti: sm_75
 #   RTX 3080/3090: sm_86
 #   RTX 4080/4090: sm_89
-#   GTX TITAN X: sm_52
-GPU_ARCH = sm_52
+GPU_ARCH = sm_75
 
 # Source files
 CPU_SOURCES = ../src/orderbook_cpu.cpp
