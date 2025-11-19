@@ -5,9 +5,9 @@ NVCC = nvcc
 NVCC_FLAGS = -std=c++14 -O3 -I../include --compiler-options -Wall -rdc=true
 
 # GPU Architecture - Auto-detect or manually specify
-# Supported: sm_52, sm_75, sm_80
-# Auto-detection: If GPU_ARCH is not set, will detect from GPU
-# Manual override: make GPU_ARCH=sm_75
+# - If GPU_ARCH is provided (sm_XX or XX) we'll target only that arch
+# - Otherwise we detect via nvidia-smi; if detection fails we build a fat binary
+#   that supports a broad set of architectures so the executable runs on any GPU.
 
 # Auto-detect GPU architecture if not specified
 ifeq ($(GPU_ARCH),)
@@ -43,10 +43,28 @@ ifeq ($(GPU_ARCH),)
     else ifeq ($(COMPUTE_CAP),70)
         GPU_ARCH := sm_75
     else
-        # Default to sm_75 if detection fails
-        GPU_ARCH := sm_75
+        # Leave GPU_ARCH empty - we'll fall back to a fat binary
     endif
 endif
+
+# Determine which architectures to target
+DEFAULT_ARCH_LIST := 52 60 70 75 80 86 89
+GPU_ARCH_LIST :=
+
+ifneq ($(GPU_ARCH),)
+    GPU_ARCH_SANITIZED := $(patsubst sm_%,%,$(GPU_ARCH))
+    ifeq ($(GPU_ARCH_SANITIZED),)
+        GPU_ARCH_SANITIZED := $(GPU_ARCH)
+    endif
+    GPU_ARCH_LIST := $(GPU_ARCH_SANITIZED)
+else ifneq ($(COMPUTE_CAP),)
+    GPU_ARCH_LIST := $(COMPUTE_CAP)
+else
+    GPU_ARCH_LIST := $(DEFAULT_ARCH_LIST)
+endif
+
+NVCC_ARCH_FLAGS := $(foreach arch,$(GPU_ARCH_LIST),-gencode arch=compute_$(arch),code=sm_$(arch))
+NVCC_FLAGS += $(NVCC_ARCH_FLAGS)
 
 # Source files
 CPU_SOURCES = ../src/orderbook_cpu.cpp
@@ -63,8 +81,8 @@ all: $(BENCHMARK_BIN)
 
 $(BENCHMARK_BIN): $(BENCHMARK_SOURCE) $(CPU_SOURCES) $(CUDA_SOURCES)
 	@echo "Compiling benchmark..."
-	@echo "Using GPU architecture: $(GPU_ARCH)"
-	$(NVCC) $(NVCC_FLAGS) -arch=$(GPU_ARCH) \
+	@echo "Generating code for SM architectures: $(GPU_ARCH_LIST)"
+	$(NVCC) $(NVCC_FLAGS) \
 		$(BENCHMARK_SOURCE) \
 		$(CPU_SOURCES) \
 		$(CUDA_SOURCES) \
@@ -120,9 +138,7 @@ help:
 	@echo "  ./$(BENCHMARK_BIN) <num_books> <messages_per_book> <orders_per_side> <max_trades> [block_size]"
 	@echo "  block_size: Threads per block (default: 256, must be power of 2: 32, 64, 128, 256, 512, 1024)"
 	@echo ""
-	@echo "GPU Architecture:"
-	@echo "  Current: $(GPU_ARCH)"
-	@echo "  Supported: sm_52, sm_75, sm_80"
-	@echo "  Auto-detected or manually set"
-	@echo "  Override with: make GPU_ARCH=sm_75"
+	@echo "GPU Architectures:"
+	@echo "  Targeted SM versions: $(GPU_ARCH_LIST)"
+	@echo "  Override with: make GPU_ARCH=sm_80 or GPU_ARCH_LIST=\"70 80\""
 
