@@ -18,8 +18,8 @@ constexpr int32_t EMPTY_PRICE = -1;     // Empty order indicator
 constexpr int32_t EMPTY_INDEX = -1;     // Empty index indicator for linked lists
 constexpr int32_t MAX_PRICE = 1000000;  // Maximum price in cents ($10,000)
 constexpr int32_t MIN_PRICE = 1;        // Minimum price in cents ($0.01)
-constexpr int32_t PRICE_MAP_SIZE = 65536; // Hash table size for price map (2^16)
-constexpr int32_t ORDER_ID_MAP_SIZE = 65536; // Hash table size for order-ID map
+constexpr int32_t PRICE_MAP_SIZE = 2048; // Hash table size for price map (reduced from 65536 for memory efficiency)
+constexpr int32_t ORDER_ID_MAP_SIZE = 2048; // Hash table size for order-ID map (reduced from 65536 for memory efficiency)
 
 // Order format: [price, quantity, order_id, trader_id, time_sec, time_ns]
 // Maps to JAX array structure from JaxOrderBookArrays.py
