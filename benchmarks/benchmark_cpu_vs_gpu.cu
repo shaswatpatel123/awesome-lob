@@ -128,7 +128,9 @@ double benchmark_gpu(
     
     // Warm-up run
     std::cout << "Warm-up run..." << std::endl;
-    process_messages_sequential_kernel<<<num_books, 256>>>(
+    dim3 grid((num_books + 255) / 256);
+    dim3 block(256);
+    process_messages_sequential_kernel<<<grid, block>>>(
         gpu_batch,
         d_messages,
         num_messages_per_book,
@@ -145,7 +147,7 @@ double benchmark_gpu(
     
     cudaEventRecord(start);
     
-    process_messages_sequential_kernel<<<num_books, 256>>>(
+    process_messages_sequential_kernel<<<grid, block>>>(
         gpu_batch,
         d_messages,
         num_messages_per_book,

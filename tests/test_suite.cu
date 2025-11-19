@@ -131,7 +131,9 @@ bool unit_test_add_order(TestStats& stats) {
     CUDA_CHECK(cudaMalloc(&d_msg, sizeof(Message)));
     CUDA_CHECK(cudaMemcpy(d_msg, &msg, sizeof(Message), cudaMemcpyHostToDevice));
     
-    process_messages_sequential_kernel<<<1, 256>>>(gpu_batch, d_msg, 1, 1);
+    dim3 grid((1 + 255) / 256);
+    dim3 block(256);
+    process_messages_sequential_kernel<<<grid, block>>>(gpu_batch, d_msg, 1, 1);
     CUDA_CHECK(cudaGetLastError());
     CUDA_CHECK(cudaDeviceSynchronize());
     
@@ -208,7 +210,9 @@ bool unit_test_cancel_order(TestStats& stats) {
     CUDA_CHECK(cudaMemcpy(d_msgs, messages.data(), messages.size() * sizeof(Message), 
                          cudaMemcpyHostToDevice));
     
-    process_messages_sequential_kernel<<<1, 256>>>(gpu_batch, d_msgs, messages.size(), 1);
+    dim3 grid((1 + 255) / 256);
+    dim3 block(256);
+    process_messages_sequential_kernel<<<grid, block>>>(gpu_batch, d_msgs, messages.size(), 1);
     CUDA_CHECK(cudaDeviceSynchronize());
     
     // Copy and compare
@@ -280,7 +284,9 @@ bool unit_test_simple_match(TestStats& stats) {
     CUDA_CHECK(cudaMemcpy(d_msgs, messages.data(), messages.size() * sizeof(Message),
                          cudaMemcpyHostToDevice));
     
-    process_messages_sequential_kernel<<<1, 256>>>(gpu_batch, d_msgs, messages.size(), 1);
+    dim3 grid((1 + 255) / 256);
+    dim3 block(256);
+    process_messages_sequential_kernel<<<grid, block>>>(gpu_batch, d_msgs, messages.size(), 1);
     CUDA_CHECK(cudaDeviceSynchronize());
     
     // Copy and compare
@@ -364,7 +370,9 @@ bool integration_test_scenario(TestStats& stats, const char* name,
     CUDA_CHECK(cudaMemcpy(d_msgs, messages.data(), messages.size() * sizeof(Message),
                          cudaMemcpyHostToDevice));
     
-    process_messages_sequential_kernel<<<1, 256>>>(gpu_batch, d_msgs, messages.size(), 1);
+    dim3 grid((1 + 255) / 256);
+    dim3 block(256);
+    process_messages_sequential_kernel<<<grid, block>>>(gpu_batch, d_msgs, messages.size(), 1);
     CUDA_CHECK(cudaDeviceSynchronize());
     
     // Copy and compare
@@ -450,7 +458,9 @@ bool functional_test_random(TestStats& stats, int num_messages, const char* size
                          cudaMemcpyHostToDevice));
     
     auto gpu_start = std::chrono::high_resolution_clock::now();
-    process_messages_sequential_kernel<<<1, 256>>>(gpu_batch, d_msgs, messages.size(), 1);
+    dim3 grid((1 + 255) / 256);
+    dim3 block(256);
+    process_messages_sequential_kernel<<<grid, block>>>(gpu_batch, d_msgs, messages.size(), 1);
     CUDA_CHECK(cudaDeviceSynchronize());
     auto gpu_end = std::chrono::high_resolution_clock::now();
     auto gpu_time = std::chrono::duration_cast<std::chrono::microseconds>(gpu_end - gpu_start).count();

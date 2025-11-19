@@ -176,8 +176,8 @@ __global__ void match_order_batch_kernel(
  * Process array of messages sequentially for each orderbook in parallel
  * THIS IS THE MAIN KERNEL - Entry point for message processing
  * 
- * Each thread block processes ALL messages for ONE orderbook sequentially
- * Multiple orderbooks processed in parallel (one per block)
+ * Each thread processes ALL messages for ONE orderbook sequentially
+ * Multiple orderbooks processed in parallel (one per thread)
  * 
  * Maps to JAX scan_through_entire_array (JaxOrderBookArrays.py:265-267)
  * 
@@ -189,8 +189,11 @@ __global__ void process_messages_sequential_kernel(
     int num_messages_per_book,
     int num_books
 ) {
-    int book_idx = blockIdx.x;
-    if (book_idx >= num_books) return;
+    // Calculate global thread index (one orderbook per thread)
+    int thread_idx = blockIdx.x * blockDim.x + threadIdx.x;
+    if (thread_idx >= num_books) return;
+    
+    int book_idx = thread_idx;
     
     // Get this orderbook's arrays
     Order* asks = batch.get_asks(book_idx);
@@ -201,26 +204,22 @@ __global__ void process_messages_sequential_kernel(
     // Messages are laid out as: [book0_msgs, book1_msgs, ..., bookN_msgs]
     const Message* book_messages = messages + (book_idx * num_messages_per_book);
     
-    // Only thread 0 processes messages (sequential dependency)
-    // Other threads in block are idle (unavoidable due to state dependencies)
-    if (threadIdx.x == 0) {
-        // Process each message in sequence
-        for (int msg_idx = 0; msg_idx < num_messages_per_book; msg_idx++) {
-            const Message& msg = book_messages[msg_idx];
-            
-            // Skip empty/invalid messages (price == -1 or quantity == 0)
-            if (msg.quantity <= 0 || msg.type == 0) continue;
-            
-            // Process this message
-            process_message_device(
-                asks, 
-                bids, 
-                trades, 
-                msg,
-                batch.n_orders_per_book,
-                batch.n_trades_per_book
-            );
-        }
+    // Process each message in sequence (sequential dependency within orderbook)
+    for (int msg_idx = 0; msg_idx < num_messages_per_book; msg_idx++) {
+        const Message& msg = book_messages[msg_idx];
+        
+        // Skip empty/invalid messages (price == -1 or quantity == 0)
+        if (msg.quantity <= 0 || msg.type == 0) continue;
+        
+        // Process this message
+        process_message_device(
+            asks, 
+            bids, 
+            trades, 
+            msg,
+            batch.n_orders_per_book,
+            batch.n_trades_per_book
+        );
     }
 }
 

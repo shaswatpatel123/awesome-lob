@@ -147,8 +147,8 @@ public:
                              num_messages * sizeof(Message), 
                              cudaMemcpyHostToDevice));
         
-        // Process
-        dim3 grid(num_books);
+        // Process (one orderbook per thread)
+        dim3 grid((num_books + 255) / 256);
         dim3 block(256);
         process_messages_sequential_kernel<<<grid, block>>>(
             batch, d_messages, num_messages, num_books
