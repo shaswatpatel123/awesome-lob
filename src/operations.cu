@@ -276,8 +276,8 @@ __device__ void match_single_order_warp(
         int32_t matched_qty = min(qtm_remaining, passive_order.quantity);
         int32_t new_quantity = max(0, passive_order.quantity - matched_qty);
         
-        // Update remaining quantity
-        qtm_remaining = max(0, qtm_remaining - passive_order.quantity);
+        // Update remaining quantity - subtract what was actually matched
+        qtm_remaining = max(0, qtm_remaining - matched_qty);
         
         // Record trade
         for (int i = 0; i < n_trades; i++) {
@@ -308,8 +308,9 @@ __device__ void match_single_order_warp(
 /**
  * Match against ask orders (for incoming buy order)
  * All lanes participate in finding best, lane 0 executes match
+ * Returns remaining unmatched quantity (same in all lanes)
  */
-__device__ void match_against_asks_warp(
+__device__ int32_t match_against_asks_warp(
     Order* asks,
     Order* bids,
     Trade* trades,
@@ -347,13 +348,17 @@ __device__ void match_against_asks_warp(
             msg.order_id, msg.time_sec, msg.time_ns, n_orders, laneId
         );
     }
+    
+    // Broadcast final remaining quantity to all lanes
+    return __shfl_sync(0xFFFFFFFF, qtm_remaining, 0);
 }
 
 /**
  * Match against bid orders (for incoming sell order)
  * All lanes participate in finding best, lane 0 executes match
+ * Returns remaining unmatched quantity (same in all lanes)
  */
-__device__ void match_against_bids_warp(
+__device__ int32_t match_against_bids_warp(
     Order* asks,
     Order* bids,
     Trade* trades,
@@ -391,6 +396,9 @@ __device__ void match_against_bids_warp(
             msg.order_id, msg.time_sec, msg.time_ns, n_orders, laneId
         );
     }
+    
+    // Broadcast final remaining quantity to all lanes
+    return __shfl_sync(0xFFFFFFFF, qtm_remaining, 0);
 }
 
 // ============================================================================
@@ -423,67 +431,31 @@ __device__ void process_message_warp(
         if (msg.side == Message::ASK) {
             // Sell limit: match against bids, then add remainder
             
-            // Lane 0 counts matchable quantity
-            int32_t matchable_qty = 0;
-            if (laneId == 0) {
-                for (int i = 0; i < n_orders; i++) {
-                    if (bids[i].price != EMPTY_PRICE && bids[i].price >= msg.price) {
-                        matchable_qty += bids[i].quantity;
-                    }
-                }
-            }
+            // All lanes participate in matching - returns remaining unmatched quantity
+            int32_t remaining = match_against_bids_warp(asks, bids, trades, msg, n_orders, n_trades, laneId);
             
-            // Broadcast to all lanes
-            matchable_qty = __shfl_sync(0xFFFFFFFF, matchable_qty, 0);
-            
-            // All lanes participate in matching
-            match_against_bids_warp(asks, bids, trades, msg, n_orders, n_trades, laneId);
-            
-            // Lane 0 adds remainder
-            if (laneId == 0) {
-                int32_t remaining = msg.quantity - matchable_qty;
-                if (remaining < 0) remaining = 0;
-                
-                if (remaining > 0) {
-                    Message remaining_msg = msg;
-                    remaining_msg.quantity = remaining;
-                    add_order_warp(asks, remaining_msg, n_orders, 0);
-                }
+            // Lane 0 adds remainder if any
+            if (laneId == 0 && remaining > 0) {
+                Message remaining_msg = msg;
+                remaining_msg.quantity = remaining;
+                add_order_warp(asks, remaining_msg, n_orders, 0);
             }
         } else if (msg.side == Message::BID) {
             // Buy limit: match against asks, then add remainder
             
-            // Lane 0 counts matchable quantity
-            int32_t matchable_qty = 0;
-            if (laneId == 0) {
-                for (int i = 0; i < n_orders; i++) {
-                    if (asks[i].price != EMPTY_PRICE && asks[i].price <= msg.price) {
-                        matchable_qty += asks[i].quantity;
-                    }
-                }
-            }
+            // All lanes participate in matching - returns remaining unmatched quantity
+            int32_t remaining = match_against_asks_warp(asks, bids, trades, msg, n_orders, n_trades, laneId);
             
-            // Broadcast to all lanes
-            matchable_qty = __shfl_sync(0xFFFFFFFF, matchable_qty, 0);
-            
-            // All lanes participate in matching
-            match_against_asks_warp(asks, bids, trades, msg, n_orders, n_trades, laneId);
-            
-            // Lane 0 adds remainder
-            if (laneId == 0) {
-                int32_t remaining = msg.quantity - matchable_qty;
-                if (remaining < 0) remaining = 0;
-                
-                if (remaining > 0) {
-                    Message remaining_msg = msg;
-                    remaining_msg.quantity = remaining;
-                    add_order_warp(bids, remaining_msg, n_orders, 0);
-                }
+            // Lane 0 adds remainder if any
+            if (laneId == 0 && remaining > 0) {
+                Message remaining_msg = msg;
+                remaining_msg.quantity = remaining;
+                add_order_warp(bids, remaining_msg, n_orders, 0);
             }
         }
     }
     else if (msg.type == Message::MARKET) {
-        // Market order
+        // Market order - no remainder to add
         Message match_msg = msg;
         if (msg.side == Message::BID) {
             // Buy market: match against asks

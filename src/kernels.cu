@@ -18,8 +18,8 @@
 namespace cuda_orderbook {
     __device__ void add_order_warp(Order* orderside, const Message& msg, int n_orders, int laneId);
     __device__ void cancel_order_warp(Order* orderside, const Message& msg, int n_orders, int laneId);
-    __device__ void match_against_asks_warp(Order* asks, Order* bids, Trade* trades, const Message& msg, int n_orders, int n_trades, int laneId);
-    __device__ void match_against_bids_warp(Order* asks, Order* bids, Trade* trades, const Message& msg, int n_orders, int n_trades, int laneId);
+    __device__ int32_t match_against_asks_warp(Order* asks, Order* bids, Trade* trades, const Message& msg, int n_orders, int n_trades, int laneId);
+    __device__ int32_t match_against_bids_warp(Order* asks, Order* bids, Trade* trades, const Message& msg, int n_orders, int n_trades, int laneId);
     __device__ void process_message_warp(Order* asks, Order* bids, Trade* trades, const Message& msg, int n_orders, int n_trades, int laneId);
 }
 
