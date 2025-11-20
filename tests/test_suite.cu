@@ -147,12 +147,16 @@ bool unit_test_add_order(TestStats& stats) {
     CUDA_CHECK(cudaDeviceSynchronize());
     
     // Copy GPU results
+    Order* gpu_asks = new Order[100];
     Order* gpu_bids = new Order[100];
+    CUDA_CHECK(cudaMemcpy(gpu_asks, gpu_batch.d_asks, 100 * sizeof(Order), 
+                         cudaMemcpyDeviceToHost));
     CUDA_CHECK(cudaMemcpy(gpu_bids, gpu_batch.d_bids, 100 * sizeof(Order), 
                          cudaMemcpyDeviceToHost));
     
-    // Compare
-    bool match = compare_orders(cpu_book.bids, gpu_bids, 100, "Bids");
+    // Compare (verify bids match and asks remain unchanged)
+    bool match = compare_orders(cpu_book.asks, gpu_asks, 100, "Asks") &&
+                 compare_orders(cpu_book.bids, gpu_bids, 100, "Bids");
     
     // Verify order was added
     bool order_found = false;
@@ -166,6 +170,7 @@ bool unit_test_add_order(TestStats& stats) {
     }
     
     // Cleanup
+    delete[] gpu_asks;
     delete[] gpu_bids;
     cudaFree(d_msg);
     teardown_gpu_batch(gpu_batch);
@@ -215,14 +220,19 @@ bool unit_test_cancel_order(TestStats& stats) {
     dim3 grid((1 + 255) / 256);
     dim3 block(256);
     process_messages_sequential_kernel<<<grid, block>>>(gpu_batch, d_msgs, messages.size(), 1);
+    CUDA_CHECK(cudaGetLastError());
     CUDA_CHECK(cudaDeviceSynchronize());
     
     // Copy and compare
+    Order* gpu_asks = new Order[100];
     Order* gpu_bids = new Order[100];
+    CUDA_CHECK(cudaMemcpy(gpu_asks, gpu_batch.d_asks, 100 * sizeof(Order), 
+                         cudaMemcpyDeviceToHost));
     CUDA_CHECK(cudaMemcpy(gpu_bids, gpu_batch.d_bids, 100 * sizeof(Order), 
                          cudaMemcpyDeviceToHost));
     
-    bool match = compare_orders(cpu_book.bids, gpu_bids, 100, "Bids");
+    bool match = compare_orders(cpu_book.asks, gpu_asks, 100, "Asks") &&
+                 compare_orders(cpu_book.bids, gpu_bids, 100, "Bids");
     
     // Verify quantity reduced to 50
     bool correct_qty = false;
@@ -234,6 +244,7 @@ bool unit_test_cancel_order(TestStats& stats) {
     }
     
     // Cleanup
+    delete[] gpu_asks;
     delete[] gpu_bids;
     cudaFree(d_msgs);
     teardown_gpu_batch(gpu_batch);
@@ -282,6 +293,7 @@ bool unit_test_simple_match(TestStats& stats) {
     dim3 grid((1 + 255) / 256);
     dim3 block(256);
     process_messages_sequential_kernel<<<grid, block>>>(gpu_batch, d_msgs, messages.size(), 1);
+    CUDA_CHECK(cudaGetLastError());
     CUDA_CHECK(cudaDeviceSynchronize());
     
     // Copy and compare
@@ -361,6 +373,7 @@ bool integration_test_scenario(TestStats& stats, const char* name,
     dim3 grid((1 + 255) / 256);
     dim3 block(256);
     process_messages_sequential_kernel<<<grid, block>>>(gpu_batch, d_msgs, messages.size(), 1);
+    CUDA_CHECK(cudaGetLastError());
     CUDA_CHECK(cudaDeviceSynchronize());
     
     // Copy and compare
@@ -404,11 +417,13 @@ bool functional_test_random(TestStats& stats, int num_messages, const char* size
     
     std::cout << "  Testing with " << num_messages << " random messages..." << std::endl;
     
-    // Scale orders and trades based on message count or use override
-    int n_orders = (max_orders_override > 0) ? max_orders_override : std::max(200, num_messages / 10);
-    int n_trades = std::max(100, num_messages / 20);  // At least 100, or 5% of messages
+    // Scale orders and trades as 20% of message count (or use override)
+    // Always use exactly 20% of messages
+    int n_orders = (max_orders_override > 0) ? max_orders_override : (num_messages * 20) / 100;
+    int n_trades = (num_messages * 20) / 100;  // 20% of messages
     
-    std::cout << "  Orders per side: " << n_orders << ", Max trades: " << n_trades << std::endl;
+    std::cout << "  Orders per side: " << n_orders << " (20% of " << num_messages << " messages)" << std::endl;
+    std::cout << "  Max trades: " << n_trades << " (20% of " << num_messages << " messages)" << std::endl;
     
     // Setup
     OrderbookCPU cpu_book;
@@ -442,6 +457,7 @@ bool functional_test_random(TestStats& stats, int num_messages, const char* size
     dim3 grid((1 + 255) / 256);
     dim3 block(256);
     process_messages_sequential_kernel<<<grid, block>>>(gpu_batch, d_msgs, messages.size(), 1);
+    CUDA_CHECK(cudaGetLastError());
     CUDA_CHECK(cudaDeviceSynchronize());
     auto gpu_end = std::chrono::high_resolution_clock::now();
     auto gpu_time = std::chrono::duration_cast<std::chrono::microseconds>(gpu_end - gpu_start).count();
